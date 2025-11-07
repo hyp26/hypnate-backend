@@ -4,7 +4,9 @@ import dotenv from 'dotenv';
 import productRoutes from './routes/product.routes';
 import orderRoutes from './routes/order.routes';
 import authRoutes from './routes/auth.routes';
+import analyticsRoutes from './routes/analytics.routes';
 import errorHandler from './middleware/errorHandler';
+
 
 console.log("App starting...");
 
@@ -18,6 +20,7 @@ app.use(express.json());
 app.use('/api/products', productRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/auth', authRoutes);
+app.use("/api/analytics", analyticsRoutes);
 
 app.get("/api/health", (_, res) => res.json({ status: "ok" }));
 
