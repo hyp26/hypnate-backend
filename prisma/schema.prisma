@@ -7,33 +7,9 @@ generator client {
   provider = "prisma-client-js"
 }
 
-model Product {
-  id          Int            @id @default(autoincrement())
-  name        String
-  description String?
-  price       Float
-  stock       Int            @default(0)
-  imageUrl    String?
-  createdAt   DateTime       @default(now())
-  orders      ProductOrder[]
-}
-
-model Order {
-  id          Int            @id @default(autoincrement())
-  customer    String
-  totalAmount Float
-  status      String         @default("PENDING")
-  createdAt   DateTime       @default(now())
-  products    ProductOrder[]
-}
-
-model ProductOrder {
-  id        Int     @id @default(autoincrement())
-  productId Int
-  orderId   Int
-  quantity  Int
-  Product   Product @relation(fields: [productId], references: [id])
-  Order     Order   @relation(fields: [orderId], references: [id])
+enum Role {
+  ADMIN
+  SELLER
 }
 
 model User {
@@ -43,20 +19,60 @@ model User {
   password  String
   role      Role     @default(SELLER)
   createdAt DateTime @default(now())
-  seller    Seller?  @relation(fields: [sellerId], references: [id])
-  sellerId  Int?
+
+  // Relations
+  sellerId Int?
+  seller   Seller? @relation(fields: [sellerId], references: [id])
 }
 
 model Seller {
-  id          Int      @id @default(autoincrement())
+  id           Int      @id @default(autoincrement())
   businessName String
   gstNumber    String?
   phone        String?
   createdAt    DateTime @default(now())
-  users        User[]
+
+  // Relations
+  users    User[]
+  products Product[]
+  orders   Order[]
 }
 
-enum Role {
-  ADMIN
-  SELLER
+model Product {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  price       Float
+  stock       Int      @default(0)
+  imageUrl    String?
+  createdAt   DateTime @default(now())
+
+  // Relations
+  sellerId      Int
+  Seller        Seller         @relation(fields: [sellerId], references: [id])
+  productOrders ProductOrder[]
+}
+
+model Order {
+  id          Int      @id @default(autoincrement())
+  customer    String
+  totalAmount Float
+  status      String   @default("PENDING")
+  createdAt   DateTime @default(now())
+
+  // Relations
+  sellerId Int
+  Seller   Seller         @relation(fields: [sellerId], references: [id])
+  products ProductOrder[]
+}
+
+model ProductOrder {
+  id        Int @id @default(autoincrement())
+  productId Int
+  orderId   Int
+  quantity  Int
+
+  // Relations
+  Product Product @relation(fields: [productId], references: [id])
+  Order   Order   @relation(fields: [orderId], references: [id])
 }
