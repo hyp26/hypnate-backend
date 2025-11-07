@@ -12,37 +12,44 @@ export const register = async (req: Request, res: Response, next: NextFunction) 
   try {
     const { name, email, password, businessName, phone, role } = req.body;
 
-    if (!name || !email || !password || !businessName || !phone) {
-      return res.status(400).json({ message: "Missing required fields" });
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: "Name, email, and password are required" });
     }
 
-    const existingUser = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+    const userRole = role ? role.toUpperCase() : "SELLER";
+
+    // only require business info for SELLER role
+    if (userRole === "SELLER" && (!businessName || !phone)) {
+      return res.status(400).json({ message: "Business name and phone are required for sellers" });
+    }
+
+    const existingUser = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
     if (existingUser) {
       return res.status(400).json({ message: "Email already exists" });
     }
 
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
 
-    // create seller
-    const seller = await prisma.seller.create({
-      data: { businessName, phone },
-    });
-
-    // use provided role or default to SELLER
-    const userRole = role ? role.toUpperCase() : "SELLER";
+    let seller = null;
+    if (userRole === "SELLER") {
+      seller = await prisma.seller.create({
+        data: { businessName, phone },
+      });
+    }
 
     const user = await prisma.user.create({
       data: {
         name,
         email: email.toLowerCase(),
         password: hashedPassword,
-        sellerId: seller.id,
         role: userRole,
+        sellerId: seller?.id ?? null,
       },
     });
 
     const payload = { id: user.id, role: user.role };
-
     const token = jwt.sign(payload, JWT_SECRET, jwtOptions);
 
     res.status(201).json({
