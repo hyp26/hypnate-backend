@@ -36,6 +36,7 @@ model Seller {
   users    User[]
   products Product[]
   orders   Order[]
+  uploads  Upload[]
 }
 
 model Product {
@@ -75,4 +76,13 @@ model ProductOrder {
   // Relations
   Product Product @relation(fields: [productId], references: [id])
   Order   Order   @relation(fields: [orderId], references: [id])
+}
+
+model Upload {
+  id        Int      @id @default(autoincrement())
+  sellerId  Int
+  Seller    Seller   @relation(fields: [sellerId], references: [id])
+  filename  String
+  url       String
+  createdAt DateTime @default(now())
 }

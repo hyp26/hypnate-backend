@@ -25,6 +25,7 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+      - ./uploads:/app/uploads      # <-- persist uploads
     environment:
       DATABASE_URL: postgresql://postgres:root@localhost:5432/hypnateDB
       REDIS_URL: redis://redis:6379
@@ -37,3 +38,5 @@ services:
 
 volumes:
   pgdata:
+
+
