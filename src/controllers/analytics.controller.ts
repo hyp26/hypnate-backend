@@ -1,6 +1,12 @@
+// src/controllers/analytics.controller.ts
 import { Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
+
+type RevenueGroup = {
+  createdAt: Date;
+  _sum: { totalAmount: number | null };
+};
 
 export const getOverviewAnalytics = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
@@ -28,28 +34,32 @@ export const getOverviewAnalytics = async (req: AuthRequest, res: Response, next
       take: 1,
     });
 
-    let topProductName = null;
+    let topProductName: string | null = null;
     if (topProduct.length) {
       const product = await prisma.product.findUnique({ where: { id: topProduct[0].productId } });
-      topProductName = product?.name || null;
+      topProductName = product?.name ?? null;
     }
 
     // 4. Revenue trend (last 7 days)
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    // Use groupBy on date-level; Prisma may return createdAt as Date
     const recentRevenue = await prisma.order.groupBy({
       by: ["createdAt"],
       where: {
         sellerId,
         status: "DELIVERED",
         createdAt: {
-          gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+          gte: sevenDaysAgo,
         },
       },
       _sum: { totalAmount: true },
     });
 
-    const revenueByDay = recentRevenue.map((r) => ({
+    // Explicitly type the map parameter to avoid implicit any
+    const revenueByDay = (recentRevenue as RevenueGroup[]).map((r) => ({
       date: r.createdAt.toISOString().split("T")[0],
-      revenue: r._sum.totalAmount,
+      revenue: r._sum.totalAmount || 0,
     }));
 
     res.json({
