@@ -7,7 +7,11 @@
     "dev": "nodemon src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+
     "migrate": "prisma migrate dev",
+    "deploy:migrate": "prisma migrate deploy",
+    "generate": "prisma generate",
+
     "dev:infra": "docker compose up --build",
     "down:infra": "docker compose down",
     "logs:backend": "docker compose logs -f backend",
@@ -31,7 +35,6 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "fs": "^0.0.1-security",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "prisma": "^6.18.0",
