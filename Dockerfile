@@ -11,4 +11,5 @@ RUN npm run build
 
 EXPOSE 4000
 
-CMD ["npm", "run", "start"]
+# Run migrations on container startup, then start server
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
