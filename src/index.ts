@@ -25,7 +25,11 @@ const app = express();
 // Security & system middleware
 app.use(
   cors({
-    origin: ["https://hypnate-frontend.onrender.com"],
+    origin: [
+      "https://hypnate-frontend.onrender.com",
+      "https://hypnate.in",
+      "https://www.hypnate.in"
+],
     credentials: true,
   })
 );
