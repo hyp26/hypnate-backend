@@ -3,78 +3,87 @@ import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
 import { getSellerIdForReq } from "../utils/user";
 
-// CREATE PRODUCT (JSON ONLY)
+const DEFAULT_PAGE = 1;
+const DEFAULT_LIMIT = 20;
+
 export const createProduct = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const sellerId = await getSellerIdForReq(req);
-    if (!sellerId) {
-      return res.status(400).json({ message: "Seller account not found" });
-    }
+    if (!sellerId) return res.status(400).json({ message: "Seller account not found" });
 
     const body = req.body || {};
-
     const createData: any = {
       name: body.name,
       description: body.description ?? null,
       category: body.category ?? null,
       price: body.price !== undefined ? Number(body.price) : undefined,
-      stock: body.stock !== undefined ? Number(body.stock) : undefined,
+      stock: body.stock !== undefined ? Number(body.stock) : 0,
       imageUrl: body.imageUrl ?? body.image ?? null,
       sellerId,
     };
 
-    // Required fields validation
-    if (!createData.name || Number.isNaN(createData.price)) {
+    if (!createData.name || createData.price === undefined || Number.isNaN(createData.price)) {
       return res.status(400).json({ message: "Invalid product data" });
     }
 
-    // Remove undefined fields before sending to Prisma
-    Object.keys(createData).forEach((key) => {
-      if (createData[key] === undefined) delete createData[key];
-    });
+    Object.keys(createData).forEach((k) => createData[k] === undefined && delete createData[k]);
 
-    const product = await prisma.product.create({
-      data: createData,
-    });
-
+    const product = await prisma.product.create({ data: createData });
     return res.status(201).json(product);
-
   } catch (err: any) {
     console.error("createProduct error:", err);
-
-    // Prisma unique constraint (optional)
     if (err.code === "P2002") {
-      return res.status(409).json({
-        message: "Unique constraint failed",
-        target: err.meta?.target,
-      });
+      return res.status(409).json({ message: "Unique constraint failed", target: err.meta?.target });
     }
-
     return next(err);
   }
 };
 
-// GET ALL PRODUCTS (seller-scoped)
 export const getAllProducts = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const sellerId = await getSellerIdForReq(req);
-    if (!sellerId) {
-      return res.status(404).json({ message: "Seller profile not found" });
+    if (!sellerId) return res.status(404).json({ message: "Seller profile not found" });
+
+    // Query params
+    const page = Math.max(Number(req.query.page) || DEFAULT_PAGE, 1);
+    const limit = Math.max(Number(req.query.limit) || DEFAULT_LIMIT, 1);
+    const search = (req.query.search as string) || "";
+    const category = (req.query.category as string) || "";
+    const sort = (req.query.sort as string) || "createdAt_desc"; // createdAt_desc | price_asc | price_desc | stock_asc | stock_desc
+
+    const where: any = { sellerId };
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: "insensitive" } },
+        { description: { contains: search, mode: "insensitive" } },
+      ];
+    }
+    if (category) {
+      where.category = { equals: category };
     }
 
+    let orderBy: any = { createdAt: "desc" };
+    if (sort === "price_asc") orderBy = { price: "asc" };
+    if (sort === "price_desc") orderBy = { price: "desc" };
+    if (sort === "stock_asc") orderBy = { stock: "asc" };
+    if (sort === "stock_desc") orderBy = { stock: "desc" };
+    if (sort === "createdAt_asc") orderBy = { createdAt: "asc" };
+
+    const total = await prisma.product.count({ where });
     const products = await prisma.product.findMany({
-      where: { sellerId },
-      orderBy: { createdAt: "desc" },
+      where,
+      orderBy,
+      skip: (page - 1) * limit,
+      take: limit,
     });
 
-    return res.json(products);
+    return res.json({ products, total, page, limit });
   } catch (err) {
     console.error("getAllProducts error:", err);
-    next(err);
+    return next(err);
   }
 };
 
-// GET BY ID
 export const getProductById = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
@@ -89,11 +98,10 @@ export const getProductById = async (req: AuthRequest, res: Response, next: Next
     return res.json(product);
   } catch (err) {
     console.error("getProductById error:", err);
-    next(err);
+    return next(err);
   }
 };
 
-// UPDATE (JSON)
 export const updateProduct = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
@@ -105,16 +113,14 @@ export const updateProduct = async (req: AuthRequest, res: Response, next: NextF
     const body = req.body || {};
     const updateData: any = {
       name: body.name,
-      description: body.description,
+      description: body.description ?? null,
+      category: body.category ?? null,
       price: body.price !== undefined ? Number(body.price) : undefined,
       stock: body.stock !== undefined ? Number(body.stock) : undefined,
       imageUrl: body.imageUrl ?? body.image ?? undefined,
     };
 
-    // remove undefined
-    Object.keys(updateData).forEach((k) => {
-      if (updateData[k] === undefined) delete updateData[k];
-    });
+    Object.keys(updateData).forEach((k) => updateData[k] === undefined && delete updateData[k]);
 
     const updated = await prisma.product.updateMany({
       where: { id, sellerId },
@@ -127,31 +133,33 @@ export const updateProduct = async (req: AuthRequest, res: Response, next: NextF
     return res.json(refreshed);
   } catch (err) {
     console.error("updateProduct error:", err);
-    next(err);
+    return next(err);
   }
 };
 
-// UPDATE STOCK
 export const updateStock = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
     const stock = Number(req.body.stock);
-    if (Number.isNaN(id) || Number.isNaN(stock)) return res.status(400).json({ message: "Invalid payload" });
+    if (Number.isNaN(id) || Number.isNaN(stock)) return res.status(400).json({ message: "Invalid stock update payload" });
 
     const sellerId = await getSellerIdForReq(req);
     if (!sellerId) return res.status(404).json({ message: "Seller profile not found" });
 
-    const updated = await prisma.product.updateMany({ where: { id, sellerId }, data: { stock } });
+    const updated = await prisma.product.updateMany({
+      where: { id, sellerId },
+      data: { stock },
+    });
+
     if (updated.count === 0) return res.status(404).json({ message: "Product not found or unauthorized" });
 
     return res.json({ message: "Stock updated successfully" });
   } catch (err) {
     console.error("updateStock error:", err);
-    next(err);
+    return next(err);
   }
 };
 
-// GET LOW STOCK
 export const getLowStockProducts = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const sellerId = await getSellerIdForReq(req);
@@ -165,11 +173,10 @@ export const getLowStockProducts = async (req: AuthRequest, res: Response, next:
     return res.json(products);
   } catch (err) {
     console.error("getLowStockProducts error:", err);
-    next(err);
+    return next(err);
   }
 };
 
-// DELETE
 export const deleteProduct = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
@@ -184,6 +191,6 @@ export const deleteProduct = async (req: AuthRequest, res: Response, next: NextF
     return res.json({ message: "Product deleted successfully" });
   } catch (err) {
     console.error("deleteProduct error:", err);
-    next(err);
+    return next(err);
   }
 };
