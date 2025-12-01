@@ -16,6 +16,7 @@ export const createProduct = async (req: AuthRequest, res: Response, next: NextF
     const createData: any = {
       name: body.name,
       description: body.description ?? null,
+      category: body.category ?? null,
       price: body.price !== undefined ? Number(body.price) : undefined,
       stock: body.stock !== undefined ? Number(body.stock) : undefined,
       imageUrl: body.imageUrl ?? body.image ?? null,
