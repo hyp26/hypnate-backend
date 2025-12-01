@@ -6,28 +6,25 @@ import {
   updateProduct,
   deleteProduct,
   updateStock,
-  getLowStockProducts
+  getLowStockProducts,
 } from "../controllers/product.controller";
 import { verifyToken } from "../middleware/authMiddleware";
-import { getMulterForMode } from "../middleware/upload.middleware";
 
 const router = Router();
-router.use(verifyToken);
 
-// detect mode: cloud OR local
-const uploadMode = (process.env.UPLOAD_MODE as string) === "cloud" ? "cloud" : "local";
-const upload = getMulterForMode(uploadMode);
+// protect all product routes
+router.use(verifyToken);
 
 router.get("/low-stock", getLowStockProducts);
 
-// IMPORTANT → enable file upload for creation
-router.post("/", upload.single("image"), createProduct);
+// Product creation is JSON-only (image already uploaded separately)
+router.post("/", createProduct);
 
 router.get("/", getAllProducts);
 router.get("/:id", getProductById);
 
-// IMPORTANT → enable file upload for updating products
-router.put("/:id", upload.single("image"), updateProduct);
+// Update product via JSON patch (imageUrl optional)
+router.put("/:id", updateProduct);
 
 router.patch("/:id/stock", updateStock);
 router.delete("/:id", deleteProduct);
