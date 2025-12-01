@@ -4,7 +4,6 @@ import { AuthRequest } from "../middleware/authMiddleware";
 import { getSellerIdForReq } from "../utils/user";
 
 // CREATE PRODUCT (JSON ONLY)
-// Frontend uploads image separately and sends an image URL in `image` or `imageUrl`.
 export const createProduct = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const sellerId = await getSellerIdForReq(req);
@@ -12,33 +11,25 @@ export const createProduct = async (req: AuthRequest, res: Response, next: NextF
       return res.status(400).json({ message: "Seller account not found" });
     }
 
-    // Accept both `image` and `imageUrl` from frontend, map to imageUrl
     const body = req.body || {};
-    const name = (body.name || "").trim();
-    const description = body.description ?? null;
-    const price = body.price !== undefined ? Number(body.price) : undefined;
-    const stock = body.stock !== undefined ? Number(body.stock) : undefined;
-    const imageUrl = body.imageUrl ?? body.image ?? null;
-    const category = body.category ?? null;
-
-    if (!name || price === undefined || Number.isNaN(price)) {
-      return res.status(400).json({ message: "Invalid product payload: name and price are required" });
-    }
 
     const createData: any = {
-      name,
-      description,
-      price,
-      stock: stock ?? 0,
-      imageUrl,
+      name: body.name,
+      description: body.description ?? null,
+      price: body.price !== undefined ? Number(body.price) : undefined,
+      stock: body.stock !== undefined ? Number(body.stock) : undefined,
+      imageUrl: body.imageUrl ?? body.image ?? null,
       sellerId,
-      // include category if your Prisma model has it (your schema above doesn't declare category field)
-      // category,
     };
 
-    // delete undefined keys to avoid overriding DB defaults
-    Object.keys(createData).forEach((k) => {
-      if (createData[k] === undefined) delete createData[k];
+    // Required fields validation
+    if (!createData.name || Number.isNaN(createData.price)) {
+      return res.status(400).json({ message: "Invalid product data" });
+    }
+
+    // Remove undefined fields before sending to Prisma
+    Object.keys(createData).forEach((key) => {
+      if (createData[key] === undefined) delete createData[key];
     });
 
     const product = await prisma.product.create({
@@ -46,13 +37,16 @@ export const createProduct = async (req: AuthRequest, res: Response, next: NextF
     });
 
     return res.status(201).json(product);
+
   } catch (err: any) {
     console.error("createProduct error:", err);
 
-    // Prisma known errors (optional)
+    // Prisma unique constraint (optional)
     if (err.code === "P2002") {
-      // unique constraint failed
-      return res.status(409).json({ message: "Unique constraint failed", target: err.meta?.target });
+      return res.status(409).json({
+        message: "Unique constraint failed",
+        target: err.meta?.target,
+      });
     }
 
     return next(err);
