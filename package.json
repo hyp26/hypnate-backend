@@ -27,7 +27,7 @@
   "homepage": "https://github.com/hyp26/hypnate-backend#readme",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.927.0",
-    "@prisma/client": "^7.0.1",
+    "@prisma/client": "^5.15.0",
     "bcrypt": "^6.0.0",
     "cloudinary": "^2.8.0",
     "cors": "^2.8.5",
@@ -50,7 +50,7 @@
     "@types/node": "^24.10.0",
     "@types/streamifier": "^0.1.2",
     "nodemon": "^3.1.10",
-    "prisma": "^7.0.1",
+    "prisma": "^5.15.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   }
