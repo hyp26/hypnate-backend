@@ -6,6 +6,8 @@ import dotenv from "dotenv";
 import path from "path";
 
 // Routes
+
+import categoryRoutes from "./routes/category.routes";
 import productRoutes from "./routes/product.routes";
 import uploadRoutes from "./routes/upload.routes";
 import orderRoutes from "./routes/order.routes";
@@ -52,6 +54,9 @@ app.use(
   }),
   uploadRoutes
 );
+
+// Category CRUD
+app.use("/api/categories", categoryRoutes);
 
 // Product CRUD (JSON only)
 app.use("/api/products", productRoutes);

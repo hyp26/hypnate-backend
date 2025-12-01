@@ -39,6 +39,12 @@ model Seller {
   uploads  Upload[]
 }
 
+model Category {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  createdAt DateTime @default(now())
+}
+
 model Product {
   id          Int      @id @default(autoincrement())
   name        String
