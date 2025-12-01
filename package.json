@@ -7,11 +7,9 @@
     "dev": "nodemon src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-
     "migrate": "prisma migrate dev",
     "deploy:migrate": "prisma migrate deploy",
     "generate": "prisma generate",
-
     "dev:infra": "docker compose up --build",
     "down:infra": "docker compose down",
     "logs:backend": "docker compose logs -f backend",
@@ -35,11 +33,14 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "prisma": "^6.18.0",
     "streamifier": "^0.1.1",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "zod": "^4.1.13"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",

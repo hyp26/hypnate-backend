@@ -1,90 +1,86 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
-import { uploadBufferToCloudinary } from "../utils/cloudinary";
 import { getSellerIdForReq } from "../utils/user";
+import { productSchema } from "../utils/validation";
 
 
-// CREATE PRODUCT (multipart/form-data)
+//
+// CREATE PRODUCT (JSON ONLY)
+// Image is already uploaded → frontend sends imageUrl
+//
 export const createProduct = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { name, description, price, stock, imageUrl } = req.body;
-
     const sellerId = await getSellerIdForReq(req);
     if (!sellerId) {
       return res.status(400).json({ message: "Seller account not found" });
     }
 
-    let finalImageUrl: string | null = null;
-
-    // 1. File uploaded via form-data
-    if (req.file) {
-      const mode = process.env.UPLOAD_MODE || "cloud";
-
-      if (mode === "cloud") {
-        const result = await uploadBufferToCloudinary(req.file.buffer, "hypnate/products");
-        finalImageUrl = result.secure_url;
-      } else {
-        // local mode → file saved via multer.diskStorage
-        finalImageUrl = `/uploads/${req.file.filename}`;
-      }
-    }
-
-    // 2. JSON fallback (if no file uploaded)
-    if (!finalImageUrl && imageUrl) {
-      finalImageUrl = imageUrl;
-    }
+    // Validate request body
+    const parsed = productSchema.parse({
+      ...req.body,
+      price: Number(req.body.price),
+      stock: Number(req.body.stock),
+    });
 
     const product = await prisma.product.create({
       data: {
-        name,
-        description,
-        price: Number(price),
-        stock: Number(stock),
-        imageUrl: finalImageUrl,
+        ...parsed,
         sellerId,
       },
     });
 
     return res.status(201).json(product);
 
-  } catch (err) {
+  } catch (err: any) {
     console.error("createProduct error:", err);
+
+    if (err.name === "ZodError") {
+      return res.status(400).json({ message: err.errors });
+    }
+
     next(err);
   }
 };
 
 
-// GET ALL PRODUCTS
+
+//
+// GET ALL PRODUCTS (Seller scoped)
+//
 export const getAllProducts = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const sellerId = await getSellerIdForReq(req);
-    if (!sellerId) return res.status(404).json({ message: "Seller profile not found" });
+    if (!sellerId) {
+      return res.status(404).json({ message: "Seller profile not found" });
+    }
 
     const products = await prisma.product.findMany({
       where: { sellerId },
       orderBy: { createdAt: "desc" },
     });
 
-    res.json(products);
+    return res.json(products);
+
   } catch (err) {
     next(err);
   }
 };
 
 
+
+//
 // GET PRODUCT BY ID
+//
 export const getProductById = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
-
     if (Number.isNaN(id)) {
       return res.status(400).json({ message: "Invalid product ID" });
     }
 
     const sellerId = await getSellerIdForReq(req);
-
-    if (sellerId === null || sellerId === undefined) {
+    if (!sellerId) {
       return res.status(404).json({ message: "Seller profile not found" });
     }
 
@@ -105,45 +101,37 @@ export const getProductById = async (req: AuthRequest, res: Response, next: Next
 };
 
 
+
+//
 // UPDATE PRODUCT
+// JSON-based update (imageUrl optional)
+//
 export const updateProduct = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
-    const { name, description, price, stock, imageUrl } = req.body;
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
 
     const sellerId = await getSellerIdForReq(req);
-    if (!sellerId) return res.status(404).json({ message: "Seller not found" });
-
-    let finalImageUrl: string | undefined = undefined;
-
-    // 1. If a new file was uploaded
-    if (req.file) {
-      const mode = process.env.UPLOAD_MODE || "cloud";
-
-      if (mode === "cloud") {
-        const result = await uploadBufferToCloudinary(req.file.buffer, "hypnate/products");
-        finalImageUrl = result.secure_url;
-      } else {
-        finalImageUrl = `/uploads/${req.file.filename}`;
-      }
+    if (!sellerId) {
+      return res.status(404).json({ message: "Seller profile not found" });
     }
 
-    // 2. JSON fallback
-    if (!req.file && imageUrl) {
-      finalImageUrl = imageUrl;
-    }
+    const { name, description, price, stock, imageUrl } = req.body;
 
     const updateData: any = {
       name,
       description,
-      price: price ? Number(price) : undefined,
-      stock: stock ? Number(stock) : undefined,
+      price: price !== undefined ? Number(price) : undefined,
+      stock: stock !== undefined ? Number(stock) : undefined,
+      imageUrl: imageUrl ?? undefined,
     };
 
-    // only include imageUrl if we have a new one
-    if (finalImageUrl !== undefined) {
-      updateData.imageUrl = finalImageUrl;
-    }
+    // Remove undefined fields so Prisma doesn't overwrite values
+    Object.keys(updateData).forEach((key) => {
+      if (updateData[key] === undefined) delete updateData[key];
+    });
 
     const updated = await prisma.product.updateMany({
       where: { id, sellerId },
@@ -164,26 +152,34 @@ export const updateProduct = async (req: AuthRequest, res: Response, next: NextF
 };
 
 
+
+//
 // UPDATE STOCK
+//
 export const updateStock = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
-    const { stock } = req.body;
+    const stock = Number(req.body.stock);
+
+    if (Number.isNaN(id) || Number.isNaN(stock)) {
+      return res.status(400).json({ message: "Invalid stock update payload" });
+    }
 
     const sellerId = await getSellerIdForReq(req);
-    if (sellerId === null || sellerId === undefined) {
+    if (!sellerId) {
       return res.status(404).json({ message: "Seller profile not found" });
     }
 
     const updated = await prisma.product.updateMany({
       where: { id, sellerId },
-      data: { stock: Number(stock) },
+      data: { stock },
     });
 
-    if (updated.count === 0)
+    if (updated.count === 0) {
       return res.status(404).json({ message: "Product not found or unauthorized" });
+    }
 
-    res.json({ message: "Stock updated successfully" });
+    return res.json({ message: "Stock updated successfully" });
 
   } catch (err) {
     next(err);
@@ -191,11 +187,14 @@ export const updateStock = async (req: AuthRequest, res: Response, next: NextFun
 };
 
 
-// LOW STOCK (<10)
+
+//
+// GET LOW STOCK PRODUCTS (<10)
+//
 export const getLowStockProducts = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const sellerId = await getSellerIdForReq(req);
-    if (sellerId === null || sellerId === undefined) {
+    if (!sellerId) {
       return res.status(404).json({ message: "Seller profile not found" });
     }
 
@@ -204,7 +203,7 @@ export const getLowStockProducts = async (req: AuthRequest, res: Response, next:
       orderBy: { stock: "asc" },
     });
 
-    res.json(products);
+    return res.json(products);
 
   } catch (err) {
     next(err);
@@ -212,13 +211,20 @@ export const getLowStockProducts = async (req: AuthRequest, res: Response, next:
 };
 
 
+
+//
 // DELETE PRODUCT
+//
 export const deleteProduct = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
-    const sellerId = await getSellerIdForReq(req);
 
-    if (sellerId === null || sellerId === undefined) {
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: "Invalid product ID" });
+    }
+
+    const sellerId = await getSellerIdForReq(req);
+    if (!sellerId) {
       return res.status(404).json({ message: "Seller profile not found" });
     }
 
@@ -226,10 +232,11 @@ export const deleteProduct = async (req: AuthRequest, res: Response, next: NextF
       where: { id, sellerId },
     });
 
-    if (deleted.count === 0)
+    if (deleted.count === 0) {
       return res.status(404).json({ message: "Product not found or unauthorized" });
+    }
 
-    res.json({ message: "Product deleted successfully" });
+    return res.json({ message: "Product deleted successfully" });
 
   } catch (err) {
     next(err);
