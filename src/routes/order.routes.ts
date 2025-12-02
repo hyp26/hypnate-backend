@@ -8,16 +8,29 @@ import {
   updatePaymentStatus,
   addTracking,
 } from "../controllers/order.controller";
+
 import { generateInvoice } from "../controllers/invoice.controller";
+import { exportOrders } from "../controllers/orderExport.controller";
 import { verifyToken } from "../middleware/authMiddleware";
 
 const router = Router();
 
-// -------------------------INVOICE ROUTE (NO verifyToken) – token comes via query param-----------------------------------
+/* -----------------------------------------------------------------------
+   PUBLIC ROUTES (NO verifyToken)
+   These accept ?token=... via query param because window.open cannot send headers
+------------------------------------------------------------------------ */
+
+// Invoice download
 router.get("/:id/invoice", generateInvoice);
 
+// Export all orders
+router.get("/export/all", exportOrders);   // <-- NEW EXPORT ROUTE
 
-// -----------------------------ALL OTHER ROUTES REQUIRE AUTH-------------------------------
+
+/* -----------------------------------------------------------------------
+   PROTECTED ROUTES (REQUIRE AUTH HEADER TOKEN)
+------------------------------------------------------------------------ */
+
 router.use(verifyToken);
 
 router.get("/", getOrders);
