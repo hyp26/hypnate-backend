@@ -1,4 +1,3 @@
-// src/controllers/order.controller.ts
 import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
