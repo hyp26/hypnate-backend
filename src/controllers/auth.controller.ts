@@ -1,13 +1,26 @@
 import { Request, Response, NextFunction } from "express";
 import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken"; // missing import in your version
+import jwt from "jsonwebtoken";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
 import { jwtOptions, JWT_SECRET, SALT_ROUNDS } from "../utils/jwtConfig";
 
-// ===============================
-// User Registration
-// ===============================
+// ============================================================================
+// HELPER: CREATE JWT PAYLOAD
+// ============================================================================
+const createToken = (user: { id: number; role: string; sellerId: number | null }) => {
+  const payload = {
+    id: user.id,
+    role: user.role,
+    sellerId: user.sellerId,     // REQUIRED FOR INVOICE AUTH
+  };
+
+  return jwt.sign(payload, JWT_SECRET, jwtOptions);
+};
+
+// ============================================================================
+// REGISTER USER
+// ============================================================================
 export const register = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, email, password, businessName, phone, role } = req.body;
@@ -16,22 +29,26 @@ export const register = async (req: Request, res: Response, next: NextFunction) 
       return res.status(400).json({ message: "Name, email, and password are required" });
     }
 
-    const userRole = role ? role.toUpperCase() : "SELLER";
+    const userRole = (role || "SELLER").toUpperCase();
 
-    // only require business info for SELLER role
+    // For sellers, business info is required
     if (userRole === "SELLER" && (!businessName || !phone)) {
-      return res.status(400).json({ message: "Business name and phone are required for sellers" });
+      return res
+        .status(400)
+        .json({ message: "Business name and phone are required for sellers" });
     }
 
     const existingUser = await prisma.user.findUnique({
       where: { email: email.toLowerCase() },
     });
+
     if (existingUser) {
       return res.status(400).json({ message: "Email already exists" });
     }
 
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
 
+    // Create seller entry only if needed
     let seller = null;
     if (userRole === "SELLER") {
       seller = await prisma.seller.create({
@@ -49,12 +66,11 @@ export const register = async (req: Request, res: Response, next: NextFunction) 
       },
     });
 
-    const payload = { id: user.id, role: user.role };
-    const token = jwt.sign(payload, JWT_SECRET, jwtOptions);
+    const token = createToken(user);
 
-    res.status(201).json({
+    return res.status(201).json({
       message: "User registered successfully",
-      user: { id: user.id, email: user.email, role: user.role },
+      user: { id: user.id, email: user.email, role: user.role, sellerId: user.sellerId },
       token,
     });
   } catch (error) {
@@ -62,18 +78,29 @@ export const register = async (req: Request, res: Response, next: NextFunction) 
   }
 };
 
-// ===============================
-// User Login
-// ===============================
+// ============================================================================
+// LOGIN
+// ============================================================================
 export const login = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ message: "Invalid credentials" });
+      return res.status(400).json({ message: "Email and password required" });
     }
 
-    const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+    // MUST include sellerId
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+      select: {
+        id: true,
+        email: true,
+        password: true,
+        role: true,
+        sellerId: true,
+      },
+    });
+
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -83,15 +110,15 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
       return res.status(400).json({ message: "Incorrect password" });
     }
 
-    const payload = { id: user.id, role: user.role };
-    const token = jwt.sign(payload, JWT_SECRET, jwtOptions);
+    const token = createToken(user);
 
-    res.status(200).json({
+    return res.status(200).json({
       message: "Login successful",
       user: {
         id: user.id,
         email: user.email,
         role: user.role,
+        sellerId: user.sellerId,
       },
       token,
     });
@@ -100,48 +127,48 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
   }
 };
 
-// ===============================
-// Get User Profile
-// ===============================
+// ============================================================================
+// GET PROFILE
+// ============================================================================
 export const getProfile = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const userId = Number(req.user?.id);
+
     if (!userId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      include: { seller: true }, // adjust case to match your schema
+      include: { seller: true },
     });
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       id: user.id,
       name: user.name,
       email: user.email,
       role: user.role,
-      seller: user.seller, // must match include above
+      seller: user.seller,
     });
   } catch (error) {
     next(error);
   }
 };
 
-// ===============================
-// Update User Profile
-// ===============================
-
+// ============================================================================
+// UPDATE PROFILE
+// ============================================================================
 export const updateProfile = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { name, password, businessName, phone } = req.body;
 
     const updates: any = {};
     if (name) updates.name = name;
-    if (password) updates.password = await bcrypt.hash(password, 10);
+    if (password) updates.password = await bcrypt.hash(password, SALT_ROUNDS);
 
     const user = await prisma.user.update({
       where: { id: req.user?.id },
@@ -162,22 +189,22 @@ export const updateProfile = async (req: AuthRequest, res: Response, next: NextF
       include: { seller: true },
     });
 
-    res.json({
+    return res.json({
       message: "Profile updated successfully",
       user: refreshed,
     });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    next(error);
   }
 };
 
-// ===============================
-// logout User
-// ===============================
+// ============================================================================
+// LOGOUT
+// ============================================================================
 export const logout = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    // Invalidate the token (implementation depends on your token strategy)
-    res.json({ message: "Logout successful" });
+    // Stateless JWT cannot be invalidated — client must remove token
+    return res.json({ message: "Logout successful" });
   } catch (error) {
     next(error);
   }
