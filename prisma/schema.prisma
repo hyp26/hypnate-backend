@@ -62,28 +62,45 @@ model Product {
 }
 
 model Order {
-  id          Int      @id @default(autoincrement())
-  customer    String
-  totalAmount Float
-  status      String   @default("PENDING")
-  createdAt   DateTime @default(now())
+  id              Int       @id @default(autoincrement())
+  customerName    String
+  customerPhone   String?
+  customerEmail   String?
+  shippingAddress String?
+  
+  // Pricing
+  subtotal        Float?    @default(0)
+  tax             Float?    @default(0)
+  totalAmount     Float     // now equals subtotal + tax
+
+  // Order & payment lifecycle
+  status          String    @default("PENDING")
+  paymentStatus   String    @default("UNPAID") // UNPAID | PENDING | PAID | REFUNDED
+  paymentMethod   String?   // UPI | COD | CARD
+  
+  trackingNumber  String?
+  timeline        Json?     // stores array [{status, timestamp, note}]
+
+  createdAt       DateTime  @default(now())
 
   // Relations
-  sellerId Int
-  Seller   Seller         @relation(fields: [sellerId], references: [id])
-  products ProductOrder[]
+  sellerId        Int
+  Seller          Seller     @relation(fields: [sellerId], references: [id])
+  products        ProductOrder[]
 }
 
+
 model ProductOrder {
-  id        Int @id @default(autoincrement())
+  id        Int     @id @default(autoincrement())
   productId Int
   orderId   Int
   quantity  Int
+  priceAtPurchase Float?  // optional: freeze product price at purchase time
 
-  // Relations
-  Product Product @relation(fields: [productId], references: [id])
-  Order   Order   @relation(fields: [orderId], references: [id])
+  Product   Product @relation(fields: [productId], references: [id])
+  Order     Order   @relation(fields: [orderId], references: [id])
 }
+
 
 model Upload {
   id        Int      @id @default(autoincrement())

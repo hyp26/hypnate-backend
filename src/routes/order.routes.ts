@@ -1,15 +1,36 @@
+// src/routes/order.route.ts
 import { Router } from "express";
-import { createOrder, getOrders, getOrderById, updateOrderStatus, getOrderStatus } from "../controllers/order.controller";
+import {
+  createOrder,
+  getOrders,
+  getOrderById,
+  updateOrderStatus,
+  getOrderStatus,
+  updatePaymentStatus,
+  addTracking
+} from "../controllers/order.controller";
 import { verifyToken } from "../middleware/authMiddleware";
 
 const router = Router();
 router.use(verifyToken);
 
+// list & create
 router.get("/", getOrders);
 router.post("/", createOrder);
-router.get("/:id", getOrderById);
-router.put("/:id/status", updateOrderStatus);
-router.get("/:id/status", getOrderStatus);
 
+// order detail
+router.get("/:id", getOrderById);
+
+// status update (PATCH)
+router.patch("/:id/status", updateOrderStatus);
+
+// payment update
+router.patch("/:id/payment", updatePaymentStatus);
+
+// add tracking
+router.post("/:id/track", addTracking);
+
+// get raw status (compat)
+router.get("/:id/status", getOrderStatus);
 
 export default router;
