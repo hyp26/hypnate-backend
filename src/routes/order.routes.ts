@@ -20,11 +20,8 @@ const router = Router();
    These accept ?token=... via query param because window.open cannot send headers
 ------------------------------------------------------------------------ */
 
-// Invoice download
+router.get("/export/all", exportOrders);   
 router.get("/:id/invoice", generateInvoice);
-
-// Export all orders
-router.get("/export/all", exportOrders);   // <-- NEW EXPORT ROUTE
 
 
 /* -----------------------------------------------------------------------
