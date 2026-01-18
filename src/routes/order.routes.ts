@@ -1,41 +1,40 @@
-import { Router } from "express";
+import { Router, Request, Response, NextFunction } from "express";
+import { verifyToken } from "../middleware/authMiddleware";
 import {
   createOrder,
   getOrders,
   getOrderById,
   updateOrderStatus,
-  getOrderStatus,
   updatePaymentStatus,
   addTracking,
+  getOrderStatus,
 } from "../controllers/order.controller";
-
-import { generateInvoice } from "../controllers/invoice.controller";
 import { exportOrders } from "../controllers/orderExport.controller";
-import { verifyToken } from "../middleware/authMiddleware";
 
 const router = Router();
 
-/* -----------------------------------------------------------------------
-   PUBLIC ROUTES (NO verifyToken)
-   These accept ?token=... via query param because window.open cannot send headers
------------------------------------------------------------------------- */
+/**
+ * Helper to adapt AuthRequest controllers to Express
+ */
+const authHandler =
+  (fn: any) =>
+  (req: Request, res: Response, next: NextFunction) =>
+    Promise.resolve(fn(req, res, next)).catch(next);
 
-router.get("/export/all", exportOrders);   
-router.get("/:id/invoice", generateInvoice);
+// --------------------------------------------------
+// Orders
+// --------------------------------------------------
+router.post("/", verifyToken, authHandler(createOrder));
+router.get("/", verifyToken, authHandler(getOrders));
+router.get("/:id", verifyToken, authHandler(getOrderById));
 
+// Status & payment
+router.patch("/:id/status", verifyToken, authHandler(updateOrderStatus));
+router.patch("/:id/payment", verifyToken, authHandler(updatePaymentStatus));
+router.post("/:id/track", verifyToken, authHandler(addTracking));
+router.get("/:id/status", authHandler(getOrderStatus));
 
-/* -----------------------------------------------------------------------
-   PROTECTED ROUTES (REQUIRE AUTH HEADER TOKEN)
------------------------------------------------------------------------- */
-
-router.use(verifyToken);
-
-router.get("/", getOrders);
-router.post("/", createOrder);
-router.get("/:id", getOrderById);
-router.patch("/:id/status", updateOrderStatus);
-router.patch("/:id/payment", updatePaymentStatus);
-router.post("/:id/track", addTracking);
-router.get("/:id/status", getOrderStatus);
+// Export
+router.get("/export/all", verifyToken, authHandler(exportOrders));
 
 export default router;

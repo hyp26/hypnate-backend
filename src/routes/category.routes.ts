@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, RequestHandler } from "express";
 import { getCategories, createCategory } from "../controllers/category.controller";
 import { verifyToken } from "../middleware/authMiddleware";
 
@@ -6,7 +6,14 @@ const router = Router();
 
 router.get("/", getCategories);
 
-// Optional: protect createCategory if you want only admins to create categories
-router.post("/", verifyToken, createCategory);
+/**
+ * 🔑 Cast controller to RequestHandler
+ * This is REQUIRED when controller uses AuthRequest
+ */
+router.post(
+  "/",
+  verifyToken as RequestHandler,
+  createCategory as RequestHandler
+);
 
 export default router;

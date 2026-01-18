@@ -1,10 +1,10 @@
 import { Router } from "express";
-import { getOverviewAnalytics } from "../controllers/analytics.controller";
 import { verifyToken } from "../middleware/authMiddleware";
+import { getOverviewAnalytics } from "../controllers/analytics.controller";
 
 const router = Router();
-router.use(verifyToken);
 
-router.get("/overview", getOverviewAnalytics);
+// ✅ ALWAYS pass middleware + controller
+router.get("/overview", verifyToken, getOverviewAnalytics);
 
 export default router;

@@ -13,16 +13,36 @@ enum Role {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  name      String
-  email     String   @unique
-  password  String
+  id    Int    @id @default(autoincrement())
+  name  String
+  email String @unique
+
+  // 🔐 Auth
+  password     String? // nullable for OAuth users
+  authProvider String  @default("LOCAL")
+
+  googleId   String? @unique
+  facebookId String? @unique
+
   role      Role     @default(SELLER)
   createdAt DateTime @default(now())
 
   // Relations
   sellerId Int?
   seller   Seller? @relation(fields: [sellerId], references: [id])
+
+  // ✅ REQUIRED inverse relation
+  passwordResets PasswordReset[]
+}
+
+model PasswordReset {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Seller {
@@ -32,7 +52,6 @@ model Seller {
   phone        String?
   createdAt    DateTime @default(now())
 
-  // Relations
   users    User[]
   products Product[]
   orders   Order[]
@@ -55,52 +74,46 @@ model Product {
   imageUrl    String?
   createdAt   DateTime @default(now())
 
-  // Relations
   sellerId      Int
   Seller        Seller         @relation(fields: [sellerId], references: [id])
   productOrders ProductOrder[]
 }
 
 model Order {
-  id              Int       @id @default(autoincrement())
+  id              Int     @id @default(autoincrement())
   customerName    String
   customerPhone   String?
   customerEmail   String?
   shippingAddress String?
-  
-  // Pricing
-  subtotal        Float?    @default(0)
-  tax             Float?    @default(0)
-  totalAmount     Float     // now equals subtotal + tax
 
-  // Order & payment lifecycle
-  status          String    @default("PENDING")
-  paymentStatus   String    @default("UNPAID") // UNPAID | PENDING | PAID | REFUNDED
-  paymentMethod   String?   // UPI | COD | CARD
-  
-  trackingNumber  String?
-  timeline        Json?     // stores array [{status, timestamp, note}]
+  subtotal    Float? @default(0)
+  tax         Float? @default(0)
+  totalAmount Float
 
-  createdAt       DateTime  @default(now())
+  status        String  @default("PENDING")
+  paymentStatus String  @default("UNPAID")
+  paymentMethod String?
 
-  // Relations
-  sellerId        Int
-  Seller          Seller     @relation(fields: [sellerId], references: [id])
-  products        ProductOrder[]
+  trackingNumber String?
+  timeline       Json?
+
+  createdAt DateTime @default(now())
+
+  sellerId Int
+  Seller   Seller         @relation(fields: [sellerId], references: [id])
+  products ProductOrder[]
 }
-
 
 model ProductOrder {
-  id        Int     @id @default(autoincrement())
-  productId Int
-  orderId   Int
-  quantity  Int
-  priceAtPurchase Float?  // optional: freeze product price at purchase time
+  id              Int    @id @default(autoincrement())
+  productId       Int
+  orderId         Int
+  quantity        Int
+  priceAtPurchase Float?
 
-  Product   Product @relation(fields: [productId], references: [id])
-  Order     Order   @relation(fields: [orderId], references: [id])
+  Product Product @relation(fields: [productId], references: [id])
+  Order   Order   @relation(fields: [orderId], references: [id])
 }
-
 
 model Upload {
   id        Int      @id @default(autoincrement())
