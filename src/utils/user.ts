@@ -1,13 +1,24 @@
-import { Request } from "express";
+// src/utils/user.ts
 import prisma from "../prisma/client";
+import { AuthRequest } from "../middleware/authMiddleware";
 
-export const getSellerIdForReq = async (req: Request) => {
+/**
+ * Safely resolve sellerId for the authenticated user
+ * Works for:
+ * - JWT users
+ * - OAuth users
+ */
+export const getSellerIdForReq = async (
+  req: AuthRequest
+): Promise<number | null> => {
+  // JWT payload already contains sellerId
   if (req.user?.sellerId) {
     return req.user.sellerId;
   }
 
+  // Fallback: fetch from DB using user id
   if (!req.user?.id) {
-    return undefined;
+    return null;
   }
 
   const user = await prisma.user.findUnique({
@@ -15,5 +26,5 @@ export const getSellerIdForReq = async (req: Request) => {
     select: { sellerId: true },
   });
 
-  return typeof user?.sellerId === "number" ? user.sellerId : undefined;
+  return user?.sellerId ?? null;
 };
