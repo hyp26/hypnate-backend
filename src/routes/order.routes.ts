@@ -7,7 +7,6 @@ import {
   updateOrderStatus,
   updatePaymentStatus,
   addTracking,
-  getOrderStatus,
 } from "../controllers/order.controller";
 import { exportOrders } from "../controllers/orderExport.controller";
 
@@ -32,7 +31,6 @@ router.get("/:id", verifyToken, authHandler(getOrderById));
 router.patch("/:id/status", verifyToken, authHandler(updateOrderStatus));
 router.patch("/:id/payment", verifyToken, authHandler(updatePaymentStatus));
 router.post("/:id/track", verifyToken, authHandler(addTracking));
-router.get("/:id/status", authHandler(getOrderStatus));
 
 // Export
 router.get("/export/all", verifyToken, authHandler(exportOrders));
