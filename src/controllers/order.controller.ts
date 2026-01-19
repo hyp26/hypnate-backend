@@ -5,20 +5,20 @@ import { AuthRequest } from "../middleware/authMiddleware";
 /**
  * Resolve sellerId for current user
  */
-const resolveSellerId = async (req: Request) => {
+const resolveSellerId = async (req: Request): Promise<number | undefined> => {
   const authReq = req as AuthRequest;
 
-  let sellerId = authReq.user?.sellerId ?? undefined;
+  if (authReq.user?.sellerId) return authReq.user.sellerId;
 
-  if (!sellerId && authReq.user?.id) {
+  if (authReq.user?.id) {
     const user = await prisma.user.findUnique({
       where: { id: authReq.user.id },
       select: { sellerId: true },
     });
-    sellerId = user?.sellerId ?? undefined;
+    return user?.sellerId ?? undefined;
   }
 
-  return sellerId;
+  return undefined;
 };
 
 /**
@@ -55,27 +55,39 @@ export const createOrder = async (
     }
 
     /**
-         * 1️⃣ Find or create customer
-         */
-        const customer = await (prisma as any).customer.upsert({
-          where: {
-            sellerId_email: {
-              sellerId,
-              email: customerEmail ?? null,
-            },
-          },
-          update: {
-            name: customerName,
-            phone: customerPhone ?? undefined,
-            updatedAt: new Date(),
-          },
-          create: {
+     * 1️⃣ Find or create customer safely
+     */
+    let customer;
+
+    if (customerEmail) {
+      customer = await prisma.customer.findUnique({
+        where: {
+          sellerId_email: {
             sellerId,
-            name: customerName,
-            email: customerEmail ?? null,
-            phone: customerPhone ?? null,
+            email: customerEmail,
           },
-        });
+        },
+      });
+    }
+
+    if (!customer) {
+      customer = await prisma.customer.create({
+        data: {
+          sellerId,
+          name: customerName,
+          email: customerEmail ?? null,
+          phone: customerPhone ?? null,
+        },
+      });
+    } else {
+      await prisma.customer.update({
+        where: { id: customer.id },
+        data: {
+          name: customerName,
+          phone: customerPhone ?? customer.phone,
+        },
+      });
+    }
 
     /**
      * 2️⃣ Calculate order totals
@@ -83,22 +95,27 @@ export const createOrder = async (
     const productIds = products.map((p: any) => p.productId);
 
     const dbProducts = await prisma.product.findMany({
-      where: { id: { in: productIds }, sellerId },
+      where: {
+        id: { in: productIds },
+        sellerId,
+      },
     });
+
+    if (dbProducts.length !== productIds.length) {
+      return res.status(400).json({ message: "Invalid product(s)" });
+    }
 
     let subtotal = 0;
 
     const productCreates = products.map((p: any) => {
-      const prod = dbProducts.find((x) => x.id === p.productId);
-      const price = prod?.price ?? 0;
+      const prod = dbProducts.find((x) => x.id === p.productId)!;
       const quantity = Number(p.quantity || 1);
-
-      subtotal += price * quantity;
+      subtotal += prod.price * quantity;
 
       return {
-        productId: p.productId,
+        productId: prod.id,
         quantity,
-        priceAtPurchase: price,
+        priceAtPurchase: prod.price,
       };
     });
 
@@ -141,13 +158,12 @@ export const createOrder = async (
           include: { Product: true },
         },
       },
-
     });
 
     /**
      * 4️⃣ Update customer analytics
      */
-    await (prisma as any).customer.update({
+    await prisma.customer.update({
       where: { id: customer.id },
       data: {
         totalOrders: { increment: 1 },
@@ -165,10 +181,16 @@ export const createOrder = async (
 /**
  * GET ALL ORDERS
  */
-export const getOrders = async (req: Request, res: Response, next: NextFunction) => {
+export const getOrders = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
   try {
     const sellerId = await resolveSellerId(req);
-    if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
+    if (!sellerId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
     const orders = await prisma.order.findMany({
       where: { sellerId },
@@ -176,8 +198,8 @@ export const getOrders = async (req: Request, res: Response, next: NextFunction)
         products: {
           include: { Product: true },
         },
+        customer: true, // ✅ correct
       },
-
       orderBy: { createdAt: "desc" },
     });
 
@@ -190,7 +212,11 @@ export const getOrders = async (req: Request, res: Response, next: NextFunction)
 /**
  * GET ORDER BY ID
  */
-export const getOrderById = async (req: Request, res: Response, next: NextFunction) => {
+export const getOrderById = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
   try {
     const id = Number(req.params.id);
     if (Number.isNaN(id)) {
@@ -198,7 +224,9 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
     }
 
     const sellerId = await resolveSellerId(req);
-    if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
+    if (!sellerId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
     const order = await prisma.order.findFirst({
       where: { id, sellerId },
@@ -206,9 +234,10 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         products: {
           include: { Product: true },
         },
+        customer: true, // ✅ correct
       },
-
     });
+
 
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
@@ -223,17 +252,24 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 /**
  * UPDATE ORDER STATUS
  */
-export const updateOrderStatus = async (req: Request, res: Response, next: NextFunction) => {
+export const updateOrderStatus = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
   try {
     const id = Number(req.params.id);
     const { status, note } = req.body;
+
     if (Number.isNaN(id) || !status) {
       return res.status(400).json({ message: "Invalid request" });
     }
 
     const sellerId = await resolveSellerId(req);
     const order = await prisma.order.findFirst({ where: { id, sellerId } });
-    if (!order) return res.status(404).json({ message: "Order not found" });
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
 
     const timeline = Array.isArray(order.timeline) ? order.timeline : [];
     timeline.unshift({
@@ -256,7 +292,11 @@ export const updateOrderStatus = async (req: Request, res: Response, next: NextF
 /**
  * UPDATE PAYMENT STATUS
  */
-export const updatePaymentStatus = async (req: Request, res: Response, next: NextFunction) => {
+export const updatePaymentStatus = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
   try {
     const id = Number(req.params.id);
     const { status, method, note } = req.body;
@@ -267,7 +307,9 @@ export const updatePaymentStatus = async (req: Request, res: Response, next: Nex
 
     const sellerId = await resolveSellerId(req);
     const order = await prisma.order.findFirst({ where: { id, sellerId } });
-    if (!order) return res.status(404).json({ message: "Order not found" });
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
 
     const timeline = Array.isArray(order.timeline) ? order.timeline : [];
     timeline.unshift({
@@ -294,7 +336,11 @@ export const updatePaymentStatus = async (req: Request, res: Response, next: Nex
 /**
  * ADD TRACKING
  */
-export const addTracking = async (req: Request, res: Response, next: NextFunction) => {
+export const addTracking = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
   try {
     const id = Number(req.params.id);
     const { trackingNumber, note } = req.body;
@@ -305,7 +351,9 @@ export const addTracking = async (req: Request, res: Response, next: NextFunctio
 
     const sellerId = await resolveSellerId(req);
     const order = await prisma.order.findFirst({ where: { id, sellerId } });
-    if (!order) return res.status(404).json({ message: "Order not found" });
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
 
     const timeline = Array.isArray(order.timeline) ? order.timeline : [];
     timeline.unshift({

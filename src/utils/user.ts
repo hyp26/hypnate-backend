@@ -1,4 +1,4 @@
-// src/utils/user.ts
+
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
 

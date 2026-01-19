@@ -11,7 +11,7 @@ import { resetPassword } from "../controllers/passwordReset.controller";
 import { verifyToken } from "../middleware/authMiddleware";
 
 const router = Router();
-
+  
 /* ---------------------------
    PUBLIC
 ---------------------------- */

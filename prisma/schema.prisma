@@ -17,7 +17,6 @@ model User {
   name  String
   email String @unique
 
-  // 🔐 Auth
   password     String? // nullable for OAuth users
   authProvider String  @default("LOCAL")
 
@@ -27,11 +26,9 @@ model User {
   role      Role     @default(SELLER)
   createdAt DateTime @default(now())
 
-  // Relations
   sellerId Int?
   seller   Seller? @relation(fields: [sellerId], references: [id])
 
-  // ✅ REQUIRED inverse relation
   passwordResets PasswordReset[]
 }
 
@@ -82,30 +79,34 @@ model Product {
 
 model Order {
   id              Int     @id @default(autoincrement())
+  sellerId        Int
+  customerId      Int
+
   customerName    String
   customerPhone   String?
   customerEmail   String?
+
   shippingAddress String?
 
-  subtotal    Float? @default(0)
-  tax         Float? @default(0)
-  totalAmount Float
+  subtotal        Float? @default(0)
+  tax             Float? @default(0)
+  totalAmount     Float
 
-  status        String  @default("PENDING")
-  paymentStatus String  @default("UNPAID")
-  paymentMethod String?
+  status          String  @default("PENDING")
+  paymentStatus   String  @default("UNPAID")
+  paymentMethod   String?
 
-  trackingNumber String?
-  timeline       Json?
+  trackingNumber  String?
+  timeline        Json?
 
-  createdAt DateTime @default(now())
+  createdAt       DateTime @default(now())
 
-  sellerId   Int
-  Seller     Seller         @relation(fields: [sellerId], references: [id])
-  products   ProductOrder[]
-  Customer   Customer?      @relation(fields: [customerId], references: [id])
-  customerId Int?
+  Seller          Seller   @relation(fields: [sellerId], references: [id])
+  customer        Customer @relation(fields: [customerId], references: [id])
+  products        ProductOrder[]
 }
+
+
 
 model ProductOrder {
   id              Int    @id @default(autoincrement())
