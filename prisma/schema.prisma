@@ -17,8 +17,8 @@ model User {
   name  String
   email String @unique
 
-  password     String? // nullable for OAuth users
-  authProvider String  @default("LOCAL")
+  password     String?
+  authProvider String @default("LOCAL")
 
   googleId   String? @unique
   facebookId String? @unique
@@ -49,83 +49,11 @@ model Seller {
   phone        String?
   createdAt    DateTime @default(now())
 
-  users    User[]
-  products Product[]
-  orders   Order[]
-  uploads  Upload[]
-  Customer Customer[]
-}
-
-model Category {
-  id        Int      @id @default(autoincrement())
-  name      String   @unique
-  createdAt DateTime @default(now())
-}
-
-model Product {
-  id          Int      @id @default(autoincrement())
-  name        String
-  description String?
-  category    String?
-  price       Float
-  stock       Int      @default(0)
-  imageUrl    String?
-  createdAt   DateTime @default(now())
-
-  sellerId      Int
-  Seller        Seller         @relation(fields: [sellerId], references: [id])
-  productOrders ProductOrder[]
-}
-
-model Order {
-  id              Int     @id @default(autoincrement())
-  sellerId        Int
-  customerId      Int
-
-  customerName    String
-  customerPhone   String?
-  customerEmail   String?
-
-  shippingAddress String?
-
-  subtotal        Float? @default(0)
-  tax             Float? @default(0)
-  totalAmount     Float
-
-  status          String  @default("PENDING")
-  paymentStatus   String  @default("UNPAID")
-  paymentMethod   String?
-
-  trackingNumber  String?
-  timeline        Json?
-
-  createdAt       DateTime @default(now())
-
-  Seller          Seller   @relation(fields: [sellerId], references: [id])
-  customer        Customer @relation(fields: [customerId], references: [id])
-  products        ProductOrder[]
-}
-
-
-
-model ProductOrder {
-  id              Int    @id @default(autoincrement())
-  productId       Int
-  orderId         Int
-  quantity        Int
-  priceAtPurchase Float?
-
-  Product Product @relation(fields: [productId], references: [id])
-  Order   Order   @relation(fields: [orderId], references: [id])
-}
-
-model Upload {
-  id        Int      @id @default(autoincrement())
-  sellerId  Int
-  Seller    Seller   @relation(fields: [sellerId], references: [id])
-  filename  String
-  url       String
-  createdAt DateTime @default(now())
+  users     User[]
+  products  Product[]
+  orders    Order[]
+  uploads   Upload[]
+  customers Customer[]
 }
 
 model Customer {
@@ -142,8 +70,74 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  Seller Seller  @relation(fields: [sellerId], references: [id])
+  seller Seller @relation(fields: [sellerId], references: [id])
   orders Order[]
 
   @@unique([sellerId, email])
+}
+
+model Order {
+  id Int @id @default(autoincrement())
+
+  sellerId Int
+  seller   Seller @relation(fields: [sellerId], references: [id])
+
+  customerId Int?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+
+  customerName    String
+  customerPhone   String?
+  customerEmail   String?
+  shippingAddress String?
+
+  subtotal    Float? @default(0)
+  tax         Float? @default(0)
+  totalAmount Float
+
+  status        String @default("PENDING")
+  paymentStatus String @default("UNPAID")
+  paymentMethod String?
+
+  trackingNumber String?
+  timeline       Json?
+
+  createdAt DateTime @default(now())
+
+  products ProductOrder[]
+}
+
+model Product {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  category    String?
+  price       Float
+  stock       Int      @default(0)
+  imageUrl    String?
+  createdAt   DateTime @default(now())
+
+  sellerId Int
+  seller   Seller @relation(fields: [sellerId], references: [id])
+
+  productOrders ProductOrder[]
+}
+
+model ProductOrder {
+  id              Int @id @default(autoincrement())
+  productId       Int
+  orderId         Int
+  quantity        Int
+  priceAtPurchase Float?
+
+  product Product @relation(fields: [productId], references: [id])
+  order   Order   @relation(fields: [orderId], references: [id])
+}
+
+model Upload {
+  id        Int      @id @default(autoincrement())
+  sellerId  Int
+  seller    Seller   @relation(fields: [sellerId], references: [id])
+  filename  String
+  url       String
+  createdAt DateTime @default(now())
 }
