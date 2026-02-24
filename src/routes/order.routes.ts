@@ -9,6 +9,7 @@ import {
   addTracking,
 } from "../controllers/order.controller";
 import { exportOrders } from "../controllers/orderExport.controller";
+import { generateInvoice } from "../controllers/invoice.controller";
 
 const router = Router();
 
@@ -32,7 +33,9 @@ router.patch("/:id/status", verifyToken, authHandler(updateOrderStatus));
 router.patch("/:id/payment", verifyToken, authHandler(updatePaymentStatus));
 router.post("/:id/track", verifyToken, authHandler(addTracking));
 
-// Export
+// Export orders
 router.get("/export/all", verifyToken, authHandler(exportOrders));
 
+// Invoice generation
+router.get("/:id/invoice", verifyToken, generateInvoice);
 export default router;
