@@ -89,7 +89,7 @@ export const getCustomerById = async (
           include: {
             products: {
               include: {
-                Product: true,
+                product: true,
               },
             },
           },

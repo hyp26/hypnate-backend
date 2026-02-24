@@ -22,7 +22,7 @@ const resolveSellerId = async (req: Request): Promise<number | undefined> => {
 };
 
 /**
- * CREATE ORDER (with Customer auto-create / reuse)
+ * CREATE ORDER
  */
 export const createOrder = async (
   req: Request,
@@ -55,7 +55,7 @@ export const createOrder = async (
     }
 
     /**
-     * 1️⃣ Find or create customer safely
+     * Find or create customer
      */
     let customer;
 
@@ -90,7 +90,7 @@ export const createOrder = async (
     }
 
     /**
-     * 2️⃣ Calculate order totals
+     * Calculate totals
      */
     const productIds = products.map((p: any) => p.productId);
 
@@ -122,23 +122,20 @@ export const createOrder = async (
     const totalAmount = subtotal + Number(tax);
 
     /**
-     * 3️⃣ Create order
+     * Create order
      */
     const order = await prisma.order.create({
       data: {
         sellerId,
         customerId: customer.id,
-
         customerName,
         customerPhone,
         customerEmail,
         shippingAddress,
-
         subtotal,
         tax,
         totalAmount,
         paymentMethod: paymentMethod ?? null,
-
         status: "PENDING",
         paymentStatus: "UNPAID",
         timeline: [
@@ -148,20 +145,20 @@ export const createOrder = async (
             note: "Order placed",
           },
         ],
-
         products: {
           create: productCreates,
         },
       },
       include: {
         products: {
-          include: { Product: true },
+          include: { product: true }, // ✅ FIXED HERE
         },
+        customer: true,
       },
     });
 
     /**
-     * 4️⃣ Update customer analytics
+     * Update customer analytics
      */
     await prisma.customer.update({
       where: { id: customer.id },
@@ -196,9 +193,9 @@ export const getOrders = async (
       where: { sellerId },
       include: {
         products: {
-          include: { Product: true },
+          include: { product: true }, // ✅ FIXED HERE
         },
-        customer: true, // ✅ correct
+        customer: true,
       },
       orderBy: { createdAt: "desc" },
     });
@@ -232,12 +229,11 @@ export const getOrderById = async (
       where: { id, sellerId },
       include: {
         products: {
-          include: { Product: true },
+          include: { product: true }, // ✅ FIXED HERE
         },
-        customer: true, // ✅ correct
+        customer: true,
       },
     });
-
 
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
@@ -266,12 +262,22 @@ export const updateOrderStatus = async (
     }
 
     const sellerId = await resolveSellerId(req);
-    const order = await prisma.order.findFirst({ where: { id, sellerId } });
-    if (!order) {
+    if (!sellerId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const existing = await prisma.order.findFirst({
+      where: { id, sellerId },
+    });
+
+    if (!existing) {
       return res.status(404).json({ message: "Order not found" });
     }
 
-    const timeline = Array.isArray(order.timeline) ? order.timeline : [];
+    const timeline = Array.isArray(existing.timeline)
+      ? existing.timeline
+      : [];
+
     timeline.unshift({
       status,
       timestamp: new Date().toISOString(),
@@ -280,7 +286,16 @@ export const updateOrderStatus = async (
 
     const updated = await prisma.order.update({
       where: { id },
-      data: { status, timeline },
+      data: {
+        status,
+        timeline,
+      },
+      include: {
+        products: {
+          include: { product: true }, // ✅ correct relation
+        },
+        customer: true,
+      },
     });
 
     res.json(updated);
@@ -306,12 +321,22 @@ export const updatePaymentStatus = async (
     }
 
     const sellerId = await resolveSellerId(req);
-    const order = await prisma.order.findFirst({ where: { id, sellerId } });
-    if (!order) {
+    if (!sellerId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const existing = await prisma.order.findFirst({
+      where: { id, sellerId },
+    });
+
+    if (!existing) {
       return res.status(404).json({ message: "Order not found" });
     }
 
-    const timeline = Array.isArray(order.timeline) ? order.timeline : [];
+    const timeline = Array.isArray(existing.timeline)
+      ? existing.timeline
+      : [];
+
     timeline.unshift({
       status: `PAYMENT_${status}`,
       timestamp: new Date().toISOString(),
@@ -322,8 +347,14 @@ export const updatePaymentStatus = async (
       where: { id },
       data: {
         paymentStatus: status,
-        paymentMethod: method ?? order.paymentMethod,
+        paymentMethod: method ?? existing.paymentMethod,
         timeline,
+      },
+      include: {
+        products: {
+          include: { product: true }, // ✅ correct relation
+        },
+        customer: true,
       },
     });
 
@@ -334,7 +365,7 @@ export const updatePaymentStatus = async (
 };
 
 /**
- * ADD TRACKING
+ * ADD TRACKING NUMBER
  */
 export const addTracking = async (
   req: Request,
@@ -350,12 +381,22 @@ export const addTracking = async (
     }
 
     const sellerId = await resolveSellerId(req);
-    const order = await prisma.order.findFirst({ where: { id, sellerId } });
-    if (!order) {
+    if (!sellerId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const existing = await prisma.order.findFirst({
+      where: { id, sellerId },
+    });
+
+    if (!existing) {
       return res.status(404).json({ message: "Order not found" });
     }
 
-    const timeline = Array.isArray(order.timeline) ? order.timeline : [];
+    const timeline = Array.isArray(existing.timeline)
+      ? existing.timeline
+      : [];
+
     timeline.unshift({
       status: "SHIPPED",
       timestamp: new Date().toISOString(),
@@ -368,6 +409,12 @@ export const addTracking = async (
         trackingNumber,
         status: "SHIPPED",
         timeline,
+      },
+      include: {
+        products: {
+          include: { product: true }, // ✅ correct relation
+        },
+        customer: true,
       },
     });
 

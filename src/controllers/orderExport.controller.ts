@@ -19,7 +19,7 @@ export const exportOrders = async (
       where: { sellerId },
       include: {
         products: {
-          include: { Product: true },
+          include: { product: true },
         },
       },
       orderBy: { createdAt: "desc" },
@@ -31,7 +31,7 @@ export const exportOrders = async (
 
     for (const order of orders) {
       const items = order.products
-        .map((p) => `${p.Product.name} (x${p.quantity})`)
+        .map((p) => `${p.product.name} (x${p.quantity})`)
         .join(" | ");
 
       csv += [
