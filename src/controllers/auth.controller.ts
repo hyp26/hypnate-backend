@@ -21,6 +21,18 @@ const createToken = (user: {
   );
 };
 
+// Example of a protected controller using AuthRequest
+export const someController = async (
+  req: AuthRequest,
+  res: Response
+) => {
+  if (!req.user) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  const sellerId = req.user.sellerId;
+};
+
 /* ----------------------------------------------------
    REGISTER
 ---------------------------------------------------- */

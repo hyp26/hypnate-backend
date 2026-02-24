@@ -4,7 +4,6 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
 import path from "path";
-import passport from "passport";
 
 // Load env first
 dotenv.config();
@@ -18,8 +17,6 @@ import authRoutes from "./routes/auth.routes";
 import analyticsRoutes from "./routes/analytics.routes";
 import custumerRoutes from "./routes/customer.routes";
 
-// Passport strategies
-import "./auth/passport";
 
 // Middleware
 import errorHandler from "./middleware/errorHandler";
@@ -40,7 +37,6 @@ app.use(
   })
 );
 
-app.use(passport.initialize());
 app.use(helmet());
 app.disable("x-powered-by");
 app.use(express.json({ limit: "2mb" }));
