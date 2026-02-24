@@ -38,9 +38,9 @@ export const generateInvoice = async (req: Request, res: Response) => {
       where: { id: orderId, sellerId },
       include: {
         products: {
-          include: { Product: true },
+          include: { product: true },
         },
-        Seller: true,
+        seller: true,
       }
     });
 
@@ -64,11 +64,11 @@ export const generateInvoice = async (req: Request, res: Response) => {
     // -----------------------------------------
     // 4. SELLER INFO
     // -----------------------------------------
-    doc.fontSize(22).text(order.Seller.businessName);
+    doc.fontSize(22).text(order.seller.businessName);
     doc.fontSize(10);
 
-    if (order.Seller.gstNumber) doc.text(`GST: ${order.Seller.gstNumber}`);
-    if (order.Seller.phone) doc.text(`Phone: ${order.Seller.phone}`);
+    if (order.seller.gstNumber) doc.text(`GST: ${order.seller.gstNumber}`);
+    if (order.seller.phone) doc.text(`Phone: ${order.seller.phone}`);
 
     doc.text(`Invoice Date: ${order.createdAt.toDateString()}`);
     doc.text(`Order ID: #${order.id}`);
@@ -105,10 +105,10 @@ export const generateInvoice = async (req: Request, res: Response) => {
     // 7. ITEMS LOOP
     // -----------------------------------------
     order.products.forEach((item) => {
-      const price = item.priceAtPurchase || item.Product.price;
+      const price = item.priceAtPurchase || item.product.price;
       const subtotal = price * item.quantity;
 
-      doc.text(item.Product.name, 40, doc.y, { continued: true });
+      doc.text(item.product.name, 40, doc.y, { continued: true });
       doc.text(String(item.quantity), 250, doc.y, { continued: true });
       doc.text(`₹${price}`, 300, doc.y, { continued: true });
       doc.text(`₹${subtotal}`, 400);
