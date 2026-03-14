@@ -2,24 +2,28 @@ import { Router, RequestHandler } from "express";
 import {
   register,
   login,
+  logout,
+  refreshToken,
   forgotPassword,
   getProfile,
   updateProfile,
-  logout,
 } from "../controllers/auth.controller";
 import { resetPassword } from "../controllers/passwordReset.controller";
 import { verifyToken } from "../middleware/authMiddleware";
 
 const router = Router();
-  
+
 /* ---------------------------
    PUBLIC
 ---------------------------- */
-router.post("/register", register);
-router.post("/login", login);
-router.post("/forgot-password", forgotPassword);
+router.post("/register", register as RequestHandler);
+router.post("/login", login as RequestHandler);
+router.post("/forgot-password", forgotPassword as RequestHandler);
 router.post("/reset-password/:token", resetPassword);
 
+// Refresh access token using httpOnly refresh cookie
+// Frontend calls this when it gets 401 + code: "TOKEN_EXPIRED"
+router.post("/refresh", refreshToken as RequestHandler);
 
 /* ---------------------------
    PROTECTED

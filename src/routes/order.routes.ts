@@ -38,4 +38,6 @@ router.get("/export/all", verifyToken, authHandler(exportOrders));
 
 // Invoice generation
 router.get("/:id/invoice", verifyToken, generateInvoice);
+
+
 export default router;
