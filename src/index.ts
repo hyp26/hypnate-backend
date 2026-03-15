@@ -15,10 +15,13 @@ import orderRoutes from "./routes/order.routes";
 import authRoutes from "./routes/auth.routes";
 import analyticsRoutes from "./routes/analytics.routes";
 import custumerRoutes from "./routes/customer.routes";
+import hypnatexRoutes from "./routes/hypnatex.routes";
+import hypnartexInternalRoutes from "./routes/hypnatex.internal.routes";
 
 
 // Middleware
 import errorHandler from "./middleware/errorHandler";
+import hypnatexInternalRoutes from "./routes/hypnatex.internal.routes";
 
 const app = express();
 
@@ -58,6 +61,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/customers", custumerRoutes);
+app.use("/api/hypnate-x", hypnatexRoutes);
+app.use("/api/hypnate-x/internal", hypnatexInternalRoutes);
 
 // Static uploads (if local)
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));

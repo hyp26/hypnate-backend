@@ -7,29 +7,51 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// ─────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────
+
 enum Role {
   ADMIN
   SELLER
 }
 
+enum BuildStatus {
+  QUEUED
+  GENERATING_PAGES
+  UPLOADING_PRODUCTS
+  APPLYING_THEME
+  DEPLOYING
+  DONE
+  FAILED
+}
+
+enum StoreStatus {
+  BUILDING
+  LIVE
+  PAUSED
+}
+
+// ─────────────────────────────────────────────
+// AUTH
+// ─────────────────────────────────────────────
+
 model User {
-  id    Int    @id @default(autoincrement())
-  name  String
-  email String @unique
-
+  id           Int     @id @default(autoincrement())
+  name         String
+  email        String  @unique
   password     String?
-  authProvider String @default("LOCAL")
-
-  googleId   String? @unique
-  facebookId String? @unique
-
-  role      Role     @default(SELLER)
-  createdAt DateTime @default(now())
+  authProvider String  @default("LOCAL")
+  googleId     String? @unique
+  facebookId   String? @unique
+  role         Role    @default(SELLER)
 
   sellerId Int?
   seller   Seller? @relation(fields: [sellerId], references: [id])
 
   passwordResets PasswordReset[]
+
+  createdAt DateTime @default(now())
 }
 
 model PasswordReset {
@@ -41,6 +63,10 @@ model PasswordReset {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
+
+// ─────────────────────────────────────────────
+// SELLER
+// ─────────────────────────────────────────────
 
 model Seller {
   id           Int      @id @default(autoincrement())
@@ -54,7 +80,89 @@ model Seller {
   orders    Order[]
   uploads   Upload[]
   customers Customer[]
+  stores    Store[]    // ✅ fixed: was "stores  Store[]" (double space — cosmetic but clean)
 }
+
+// ─────────────────────────────────────────────
+// HYPNATE X
+// ─────────────────────────────────────────────
+
+model Theme {
+  id          String  @id           // "aurora", "saffron", etc.
+  name        String
+  category    String               // fashion | food | electronics | beauty | general | furniture
+  previewBg   String
+  accentColor String
+  layout      String               // editorial | bold | grid | luxury | minimal
+  tags        String[]
+  active      Boolean @default(true)
+
+  stores Store[]
+}
+
+model Store {
+  id           Int         @id @default(autoincrement())
+  sellerId     Int                  // ✅ removed @unique — one seller CAN rebuild
+  seller       Seller      @relation(fields: [sellerId], references: [id])
+
+  themeId      String
+  theme        Theme       @relation(fields: [themeId], references: [id])
+
+  storeName    String
+  slug         String      @unique
+  logoUrl      String?
+  customDomain String?     @unique
+
+  status       StoreStatus @default(BUILDING)
+  publishedAt  DateTime?
+
+  // AI-generated content
+  homepageHtml String?     @db.Text
+  aboutHtml    String?     @db.Text
+  metaTitle    String?
+  metaDesc     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  buildJobs BuildJob[]
+
+  @@index([sellerId])
+  @@index([slug])
+}
+
+model BuildJob {
+  id       Int    @id @default(autoincrement())
+  storeId  Int
+  store    Store  @relation(fields: [storeId], references: [id])
+  sellerId Int                  // ✅ kept — useful for direct queries without join
+
+  status      BuildStatus @default(QUEUED)
+  currentStep String?
+  errorMsg    String?
+
+  // Inputs snapshotted at build time
+  themeId     String
+  storeName   String
+  logoUrl     String?
+  catalogJson Json?              // product catalog at time of build
+
+  // Outputs
+  deployedUrl String?
+  buildLog    Json?              // [{ time, message }]
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([storeId])
+  @@index([sellerId])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────
+// COMMERCE
+// ─────────────────────────────────────────────
 
 model Customer {
   id       Int     @id @default(autoincrement())
@@ -70,7 +178,7 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  seller Seller @relation(fields: [sellerId], references: [id])
+  seller Seller  @relation(fields: [sellerId], references: [id])
   orders Order[]
 
   @@unique([sellerId, email])
@@ -104,6 +212,11 @@ model Order {
   createdAt DateTime @default(now())
 
   products ProductOrder[]
+
+  // ✅ recommended indexes (from earlier audit)
+  @@index([sellerId])
+  @@index([customerId])
+  @@index([status])
 }
 
 model Product {
@@ -120,10 +233,12 @@ model Product {
   seller   Seller @relation(fields: [sellerId], references: [id])
 
   productOrders ProductOrder[]
+
+  @@index([sellerId]) // ✅ recommended from earlier audit
 }
 
 model ProductOrder {
-  id              Int @id @default(autoincrement())
+  id              Int    @id @default(autoincrement())
   productId       Int
   orderId         Int
   quantity        Int

@@ -10,6 +10,7 @@
     "migrate": "prisma migrate dev",
     "deploy:migrate": "prisma migrate deploy",
     "generate": "prisma generate",
+    "seed:themes": "ts-node --project prisma/tsconfig.seed.json prisma/seed.themes.ts",
     "dev:infra": "docker compose up --build",
     "down:infra": "docker compose down",
     "logs:backend": "docker compose logs -f backend",
@@ -28,6 +29,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.927.0",
     "@prisma/client": "^5.15.0",
+    "axios": "^1.13.6",
     "bcrypt": "^6.0.0",
     "cloudinary": "^2.8.0",
     "cors": "^2.8.5",
