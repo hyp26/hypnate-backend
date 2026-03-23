@@ -16,7 +16,8 @@ import authRoutes from "./routes/auth.routes";
 import analyticsRoutes from "./routes/analytics.routes";
 import custumerRoutes from "./routes/customer.routes";
 import hypnatexRoutes from "./routes/hypnatex.routes";
-import hypnatexInternalRoutes from "./routes/hypnatex.internal.routes"; // ✅ single import
+import hypnatexInternalRoutes from "./routes/hypnatex.internal.routes";
+import onboardingRoutes from "./routes/onboarding.routes";
 
 // Middleware
 import errorHandler from "./middleware/errorHandler";
@@ -64,6 +65,7 @@ app.use("/api/analytics", analyticsRoutes);
 app.use("/api/customers", custumerRoutes);
 app.use("/api/hypnate-x/internal", hypnatexInternalRoutes); // ✅ internal BEFORE general
 app.use("/api/hypnate-x", hypnatexRoutes);
+app.use("/api/onboarding", onboardingRoutes);
 
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 app.get("/api/health", (_, res) => res.json({ status: "ok" }));
