@@ -6,7 +6,6 @@ import {
   getMyStore,
   listThemes,
   updateStore,
-  seedThemes,
 } from "../controllers/hypnatex.controller";
 
 const router = Router();
@@ -34,10 +33,5 @@ router.get("/store", getMyStore as RequestHandler);
 // Update store settings (name, custom domain, etc.)
 router.put("/store", updateStore as RequestHandler);
 
-/* ---------------------------
-   ADMIN ONLY
----------------------------- */
-// Seed default themes into DB (run once)
-router.post("/admin/seed-themes", seedThemes as RequestHandler);
 
 export default router;

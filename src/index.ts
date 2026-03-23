@@ -2,10 +2,10 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import path from "path";
 
-// Load env first
 dotenv.config();
 
 // Routes
@@ -16,12 +16,10 @@ import authRoutes from "./routes/auth.routes";
 import analyticsRoutes from "./routes/analytics.routes";
 import custumerRoutes from "./routes/customer.routes";
 import hypnatexRoutes from "./routes/hypnatex.routes";
-import hypnartexInternalRoutes from "./routes/hypnatex.internal.routes";
-
+import hypnatexInternalRoutes from "./routes/hypnatex.internal.routes"; // ✅ single import
 
 // Middleware
 import errorHandler from "./middleware/errorHandler";
-import hypnatexInternalRoutes from "./routes/hypnatex.internal.routes";
 
 const app = express();
 
@@ -40,37 +38,35 @@ app.use(
 );
 
 app.use(helmet());
+app.use(cookieParser()); // ✅ required for httpOnly cookie auth
 app.disable("x-powered-by");
 app.use(express.json({ limit: "2mb" }));
 
+/* ---------------- RATE LIMITING ---------------- */
+
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/register", authLimiter);
+app.use("/api/auth/forgot-password", authLimiter);
+
 /* ---------------- ROUTES ---------------- */
 
-// Uploads (rate limited)
 app.use(
   "/api/products/upload",
-  rateLimit({
-    windowMs: 60 * 1000,
-    max: 20,
-  }),
+  rateLimit({ windowMs: 60 * 1000, max: 20 }),
   uploadRoutes
 );
 
-// Core APIs
 app.use("/api/products", productRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/customers", custumerRoutes);
+app.use("/api/hypnate-x/internal", hypnatexInternalRoutes); // ✅ internal BEFORE general
 app.use("/api/hypnate-x", hypnatexRoutes);
-app.use("/api/hypnate-x/internal", hypnatexInternalRoutes);
 
-// Static uploads (if local)
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
-
-// Health check
 app.get("/api/health", (_, res) => res.json({ status: "ok" }));
-
-// Global error handler
 app.use(errorHandler);
 
 /* ---------------- SERVER ---------------- */
