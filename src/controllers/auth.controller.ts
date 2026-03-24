@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction } from "express";
+import { Request, Response, NextFunction, CookieOptions } from "express";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
@@ -11,10 +11,10 @@ import { JWT_SECRET, jwtOptions, SALT_ROUNDS } from "../utils/jwtConfig";
    CONSTANTS
 ---------------------------------------------------- */
 const REFRESH_SECRET = process.env.REFRESH_SECRET as string;
-const FRONTEND_URL   = process.env.FRONTEND_URL as string;
-const IS_PROD        = process.env.NODE_ENV === "production";
+const FRONTEND_URL = process.env.FRONTEND_URL as string;
+const IS_PROD = process.env.NODE_ENV === "production";
 
-const ACCESS_TOKEN_MAX_AGE  = 15 * 60 * 1000;
+const ACCESS_TOKEN_MAX_AGE = 15 * 60 * 1000;
 const REFRESH_TOKEN_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
 
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -28,20 +28,28 @@ const createAccessToken = (user: { id: number; role: string; sellerId: number | 
 const createRefreshToken = (userId: number) =>
   jwt.sign({ id: userId }, REFRESH_SECRET, { expiresIn: "7d" });
 
+const baseCookieOptions: CookieOptions = {
+  httpOnly: true,
+  secure: IS_PROD,
+  sameSite: IS_PROD ? "none" : "lax",
+};
+
 const setAuthCookies = (res: Response, accessToken: string, refreshToken: string) => {
   res.cookie("accessToken", accessToken, {
-    httpOnly: true, secure: IS_PROD, sameSite: "strict",
+    ...baseCookieOptions,
     maxAge: ACCESS_TOKEN_MAX_AGE,
+    path: "/",
   });
+
   res.cookie("refreshToken", refreshToken, {
-    httpOnly: true, secure: IS_PROD, sameSite: "strict",
-    path: "/api/auth/refresh",
+    ...baseCookieOptions,
     maxAge: REFRESH_TOKEN_MAX_AGE,
+    path: "/api/auth/refresh",
   });
 };
 
 const clearAuthCookies = (res: Response) => {
-  res.clearCookie("accessToken");
+  res.clearCookie("accessToken", { path: "/" });
   res.clearCookie("refreshToken", { path: "/api/auth/refresh" });
 };
 
