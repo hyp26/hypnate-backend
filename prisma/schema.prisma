@@ -16,6 +16,25 @@ enum Role {
   SELLER
 }
 
+enum Platform {
+  WHATSAPP
+  INSTAGRAM
+  FACEBOOK
+  TELEGRAM
+}
+
+enum MessageSender {
+  CUSTOMER
+  SELLER
+  BOT
+}
+
+enum ConversationStatus {
+  OPEN
+  RESOLVED
+  PENDING
+}
+
 enum BuildStatus {
   QUEUED
   GENERATING_PAGES
@@ -80,7 +99,8 @@ model Seller {
   orders    Order[]
   uploads   Upload[]
   customers Customer[]
-  stores    Store[]    // ✅ fixed: was "stores  Store[]" (double space — cosmetic but clean)
+  stores    Store[]
+  conversations Conversation[]
 }
 
 // ─────────────────────────────────────────────
@@ -180,6 +200,7 @@ model Customer {
 
   seller Seller  @relation(fields: [sellerId], references: [id])
   orders Order[]
+  conversations Conversation[]
 
   @@unique([sellerId, email])
 }
@@ -255,4 +276,55 @@ model Upload {
   filename  String
   url       String
   createdAt DateTime @default(now())
+}
+
+model Conversation {
+  id           Int                @id @default(autoincrement())
+  sellerId     Int
+  seller       Seller             @relation(fields: [sellerId], references: [id])
+ 
+  platform     Platform
+  status       ConversationStatus @default(OPEN)
+ 
+  // Customer info (may or may not be linked to Customer model)
+  customerId   Int?
+  customer     Customer?          @relation(fields: [customerId], references: [id])
+  customerName String
+  customerPhone String?
+  customerEmail String?
+ 
+  // Platform-specific external IDs (for webhook matching)
+  externalId   String?            // e.g. WhatsApp phone number, IG user ID
+ 
+  unreadCount  Int                @default(0)
+  lastMessage  String?
+  lastMessageAt DateTime?
+ 
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+ 
+  messages     Message[]
+ 
+  @@index([sellerId])
+  @@index([platform])
+  @@index([status])
+  @@index([sellerId, platform])
+}
+
+model Message {
+  id             Int            @id @default(autoincrement())
+  conversationId Int
+  conversation   Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+ 
+  sender         MessageSender
+  text           String         @db.Text
+  type           String         @default("text") // text | image | payment | product
+  mediaUrl       String?        // for image/file messages
+  metadata       Json?          // any platform-specific extra data
+ 
+  isRead         Boolean        @default(false)
+  createdAt      DateTime       @default(now())
+ 
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
 }

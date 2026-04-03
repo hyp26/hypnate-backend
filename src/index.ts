@@ -14,7 +14,8 @@ import uploadRoutes from "./routes/upload.routes";
 import orderRoutes from "./routes/order.routes";
 import authRoutes from "./routes/auth.routes";
 import analyticsRoutes from "./routes/analytics.routes";
-import customerRoutes from "./routes/customer.routes";  // ✅ fixed: removed duplicate "custumerRoutes"
+import customerRoutes from "./routes/customer.routes";
+import conversationRoutes from "./routes/conversation.routes"; // ✅ NEW
 import hypnatexRoutes from "./routes/hypnatex.routes";
 import hypnatexInternalRoutes from "./routes/hypnatex.internal.routes";
 import onboardingRoutes from "./routes/onboarding.routes";
@@ -24,10 +25,10 @@ import errorHandler from "./middleware/errorHandler";
 
 const app = express();
 
-/* ---------------- TRUST PROXY (VERY IMPORTANT FOR COOKIES) ---------------- */
+/* ---------------- TRUST PROXY ---------------- */
 app.set("trust proxy", 1);
 
-/* ---------------- CORS CONFIG (PRODUCTION SAFE) ---------------- */
+/* ---------------- CORS ---------------- */
 const allowedOrigins = [
   "http://localhost:3000",
   "https://hypnate-frontend.onrender.com",
@@ -48,7 +49,6 @@ app.use(
   })
 );
 
-/* ---------------- EXTRA COOKIE HEADERS ---------------- */
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Credentials", "true");
   next();
@@ -63,18 +63,12 @@ app.use(cookieParser());
 app.use(express.json({ limit: "2mb" }));
 
 /* ---------------- RATE LIMITING ---------------- */
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-});
-
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
 app.use("/api/auth/login", authLimiter);
 app.use("/api/auth/register", authLimiter);
 app.use("/api/auth/forgot-password", authLimiter);
 
 /* ---------------- ROUTES ---------------- */
-
-// Upload rate limit
 app.use(
   "/api/products/upload",
   rateLimit({ windowMs: 60 * 1000, max: 20 }),
@@ -86,6 +80,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/customers", customerRoutes);
+app.use("/api/conversations", conversationRoutes); // ✅ NEW
 
 // IMPORTANT: internal BEFORE public
 app.use("/api/hypnate-x/internal", hypnatexInternalRoutes);
@@ -104,7 +99,6 @@ app.use(errorHandler);
 
 /* ---------------- SERVER ---------------- */
 const PORT = process.env.PORT || 4000;
-
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
