@@ -14,7 +14,7 @@ import uploadRoutes from "./routes/upload.routes";
 import orderRoutes from "./routes/order.routes";
 import authRoutes from "./routes/auth.routes";
 import analyticsRoutes from "./routes/analytics.routes";
-import custumerRoutes from "./routes/customer.routes";
+import customerRoutes from "./routes/customer.routes";  // ✅ fixed: removed duplicate "custumerRoutes"
 import hypnatexRoutes from "./routes/hypnatex.routes";
 import hypnatexInternalRoutes from "./routes/hypnatex.internal.routes";
 import onboardingRoutes from "./routes/onboarding.routes";
@@ -44,7 +44,7 @@ app.use(
         callback(new Error("Not allowed by CORS"));
       }
     },
-    credentials: true, // ✅ REQUIRED for cookies
+    credentials: true,
   })
 );
 
@@ -59,7 +59,7 @@ app.use(helmet());
 app.disable("x-powered-by");
 
 /* ---------------- PARSERS ---------------- */
-app.use(cookieParser()); // ✅ REQUIRED for reading cookies
+app.use(cookieParser());
 app.use(express.json({ limit: "2mb" }));
 
 /* ---------------- RATE LIMITING ---------------- */
@@ -85,7 +85,7 @@ app.use("/api/products", productRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/analytics", analyticsRoutes);
-app.use("/api/customers", custumerRoutes);
+app.use("/api/customers", customerRoutes);
 
 // IMPORTANT: internal BEFORE public
 app.use("/api/hypnate-x/internal", hypnatexInternalRoutes);

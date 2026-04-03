@@ -62,6 +62,37 @@ export const getCustomers = async (
 };
 
 /**
+ * GET /api/customers/stats
+ * Aggregate stats for the seller's customers
+ * ⚠️ Must be registered BEFORE /:id in the router
+ */
+export const getCustomerStats = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const sellerId = await resolveSellerId(req);
+    if (!sellerId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const aggregate = await prisma.customer.aggregate({
+      where: { sellerId },
+      _count: { id: true },
+      _sum: { totalSpent: true },
+    });
+
+    res.json({
+      totalCustomers: aggregate._count.id,
+      totalRevenue: aggregate._sum.totalSpent ?? 0,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
  * GET /api/customers/:id
  * Get single customer with orders
  */
