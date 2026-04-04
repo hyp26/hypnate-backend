@@ -9,6 +9,8 @@ import path from "path";
 dotenv.config();
 
 // Routes
+
+import dashboardRoutes from "./routes/dashboard.routes";
 import productRoutes from "./routes/product.routes";
 import uploadRoutes from "./routes/upload.routes";
 import orderRoutes from "./routes/order.routes";
@@ -77,6 +79,7 @@ app.use(
   uploadRoutes
 );
 
+app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/orders", orderRoutes);
@@ -84,7 +87,7 @@ app.use("/api/analytics", analyticsRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/search", searchRouter);
-app.use("/api/conversations", conversationRoutes); // ✅ NEW
+app.use("/api/conversations", conversationRoutes);
 
 // IMPORTANT: internal BEFORE public
 app.use("/api/hypnate-x/internal", hypnatexInternalRoutes);
