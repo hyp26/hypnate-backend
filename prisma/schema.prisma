@@ -51,6 +51,16 @@ enum StoreStatus {
   PAUSED
 }
 
+enum NotificationType {
+  ORDER_NEW
+  ORDER_STATUS
+  PAYMENT_RECEIVED
+  STOCK_LOW
+  CUSTOMER_NEW
+  CONVERSATION_NEW
+  SYSTEM
+}
+
 // ─────────────────────────────────────────────
 // AUTH
 // ─────────────────────────────────────────────
@@ -83,6 +93,7 @@ model PasswordReset {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+
 // ─────────────────────────────────────────────
 // SELLER
 // ─────────────────────────────────────────────
@@ -101,6 +112,7 @@ model Seller {
   customers Customer[]
   stores    Store[]
   conversations Conversation[]
+  notifications Notification[]
 }
 
 // ─────────────────────────────────────────────
@@ -327,4 +339,23 @@ model Message {
  
   @@index([conversationId])
   @@index([conversationId, createdAt])
+}
+
+model Notification {
+  id       Int              @id @default(autoincrement())
+  sellerId Int
+  seller   Seller           @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+ 
+  type     NotificationType
+  title    String
+  body     String
+  isRead   Boolean          @default(false)
+  link     String?          // optional deep-link e.g. "/orders/123"
+  meta     Json?            // any extra data
+ 
+  createdAt DateTime @default(now())
+ 
+  @@index([sellerId])
+  @@index([sellerId, isRead])
+  @@index([sellerId, createdAt])
 }

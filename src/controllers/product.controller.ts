@@ -1,9 +1,11 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
+import { createNotification } from "./notification.controller";
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
+const LOW_STOCK_THRESHOLD = 10; // notify when stock falls below this
 
 /**
  * CREATE PRODUCT
@@ -175,6 +177,7 @@ export const updateProduct = async (
 
 /**
  * UPDATE STOCK
+ * ✅ createNotification lives here — fires when stock drops below threshold
  */
 export const updateStock = async (
   req: Request,
@@ -190,14 +193,36 @@ export const updateStock = async (
       return res.status(401).json({ message: "Unauthorized" });
     }
 
+    const sellerId = authReq.user.sellerId;
+
     if (Number.isNaN(id) || Number.isNaN(stock)) {
       return res.status(400).json({ message: "Invalid payload" });
     }
 
-    await prisma.product.updateMany({
-      where: { id, sellerId: authReq.user.sellerId },
+    // Fetch product first so we have its name for the notification
+    const product = await prisma.product.findFirst({
+      where: { id, sellerId },
+    });
+
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    await prisma.product.update({
+      where: { id },
       data: { stock },
     });
+
+    // ✅ Notify only when stock falls below threshold
+    if (stock < LOW_STOCK_THRESHOLD) {
+      await createNotification({
+        sellerId,
+        type: "STOCK_LOW",
+        title: "Low Stock Alert",
+        body: `${product.name} has only ${stock} unit${stock === 1 ? "" : "s"} left`,
+        link: `/products/${product.id}`,
+      });
+    }
 
     res.json({ message: "Stock updated successfully" });
   } catch (err) {
@@ -223,7 +248,7 @@ export const getLowStockProducts = async (
     const products = await prisma.product.findMany({
       where: {
         sellerId: authReq.user.sellerId,
-        stock: { lt: 10 },
+        stock: { lt: LOW_STOCK_THRESHOLD },
       },
       orderBy: { stock: "asc" },
     });

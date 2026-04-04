@@ -15,10 +15,12 @@ import orderRoutes from "./routes/order.routes";
 import authRoutes from "./routes/auth.routes";
 import analyticsRoutes from "./routes/analytics.routes";
 import customerRoutes from "./routes/customer.routes";
+import notificationRoutes, { searchRouter } from "./routes/notification.routes";
 import conversationRoutes from "./routes/conversation.routes"; // ✅ NEW
 import hypnatexRoutes from "./routes/hypnatex.routes";
 import hypnatexInternalRoutes from "./routes/hypnatex.internal.routes";
 import onboardingRoutes from "./routes/onboarding.routes";
+
 
 // Middleware
 import errorHandler from "./middleware/errorHandler";
@@ -80,6 +82,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/customers", customerRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/search", searchRouter);
 app.use("/api/conversations", conversationRoutes); // ✅ NEW
 
 // IMPORTANT: internal BEFORE public

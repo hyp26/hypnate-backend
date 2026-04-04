@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
+import { createNotification } from "./notification.controller";
 
 /**
  * Resolve sellerId for current user
@@ -155,6 +156,14 @@ export const createOrder = async (
         },
         customer: true,
       },
+    });
+
+    await createNotification({
+      sellerId,
+      type: "ORDER_NEW",
+      title: `New Order #${order.id}`,
+      body: `${customerName} placed an order for ₹${totalAmount}`,
+      link: `/orders/${order.id}`,
     });
 
     /**
