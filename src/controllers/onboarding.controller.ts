@@ -5,7 +5,6 @@ import Papa from "papaparse";
 
 /* ─────────────────────────────────────────────
    POST /api/onboarding/business
-   Save business info to Seller record
 ───────────────────────────────────────────── */
 export const saveBusinessInfo = async (
   req: AuthRequest,
@@ -26,13 +25,12 @@ export const saveBusinessInfo = async (
       where: { id: sellerId },
       data: {
         businessName: businessName.trim(),
-        ...(phone     && { phone }),
+        ...(phone && { phone }),
         ...(gstNumber && { gstNumber }),
+        ...(industry && { industry }),
+        ...(size && { businessSize: size }),
       },
     });
-
-    // Store extra fields on user meta (industry, size) in a separate table or just return success
-    // For now stored on seller — extend schema if needed
 
     return res.json({ message: "Business info saved", seller });
   } catch (err) {
@@ -42,7 +40,7 @@ export const saveBusinessInfo = async (
 
 /* ─────────────────────────────────────────────
    POST /api/onboarding/catalog
-   Parse CSV and bulk create products
+   Parse CSV / converted-xlsx and bulk-import products
 ───────────────────────────────────────────── */
 export const uploadCatalog = async (
   req: AuthRequest,
@@ -65,37 +63,35 @@ export const uploadCatalog = async (
     if (errors.length > 0) {
       return res.status(400).json({ message: "Invalid CSV format", errors });
     }
-
     if (data.length === 0) {
       return res.status(400).json({ message: "CSV is empty" });
     }
-
     if (data.length > 500) {
       return res.status(400).json({ message: "CSV must contain 500 products or fewer" });
     }
 
-    const REQUIRED_COLS = ["name", "price"];
     const firstRow = data[0] as any;
-    const missingCols = REQUIRED_COLS.filter((c) => !(c in firstRow));
+    const missingCols = ["name", "price"].filter((c) => !(c in firstRow));
     if (missingCols.length > 0) {
       return res.status(400).json({
         message: `CSV is missing required columns: ${missingCols.join(", ")}`,
-        hint: "Required columns: name, price. Optional: description, category, stock, image_url",
+        hint: "Required: name, price. Optional: description, category, stock, image_url",
       });
     }
 
     const products = (data as any[])
-      .map((row, i) => {
+      .map((row) => {
         const price = parseFloat(row.price);
-        if (isNaN(price) || price < 0) return null;
+        const name = String(row.name || "").trim();
+        if (!name || isNaN(price) || price < 0) return null;
         return {
           sellerId,
-          name:        String(row.name || "").trim(),
+          name,
           description: row.description ? String(row.description).trim() : null,
-          category:    row.category    ? String(row.category).trim()    : null,
+          category: row.category ? String(row.category).trim() : null,
           price,
-          stock:       parseInt(row.stock) || 0,
-          imageUrl:    row.image_url || row.imageurl || row.image || null,
+          stock: parseInt(row.stock) || 0,
+          imageUrl: row.image_url || row.imageurl || row.image || null,
         };
       })
       .filter(Boolean) as any[];
@@ -104,7 +100,6 @@ export const uploadCatalog = async (
       return res.status(400).json({ message: "No valid products found in CSV" });
     }
 
-    // Upsert — skip products already existing for this seller with same name
     const created = await prisma.product.createMany({
       data: products,
       skipDuplicates: true,
@@ -123,7 +118,7 @@ export const uploadCatalog = async (
 
 /* ─────────────────────────────────────────────
    POST /api/onboarding/payments
-   Save Razorpay keys (encrypted at rest ideally)
+   Supports all gateways: razorpay, payu, cashfree, skydo, cod
 ───────────────────────────────────────────── */
 export const savePaymentKeys = async (
   req: AuthRequest,
@@ -134,34 +129,55 @@ export const savePaymentKeys = async (
     const sellerId = req.user?.sellerId;
     if (!sellerId) return res.status(403).json({ message: "Seller account required" });
 
-    const { keyId, keySecret } = req.body;
+    const { gateway, keyId, keySecret, merchantId, salt } = req.body;
 
-    if (!keyId || !keySecret) {
-      return res.status(400).json({ message: "Both Key ID and Key Secret are required" });
+    if (!gateway) {
+      return res.status(400).json({ message: "Gateway is required" });
     }
 
-    if (!keyId.startsWith("rzp_")) {
-      return res.status(400).json({ message: "Invalid Razorpay Key ID format. Must start with rzp_" });
+    const SUPPORTED = ["razorpay", "payu", "cashfree", "skydo", "cod"];
+    if (!SUPPORTED.includes(gateway)) {
+      return res.status(400).json({ message: `Unsupported gateway: ${gateway}` });
     }
 
-    if (keyId.length < 20 || keySecret.length < 20) {
-      return res.status(400).json({ message: "Invalid key length" });
+    // COD needs no keys
+    if (gateway === "cod") {
+      await prisma.seller.update({
+        where: { id: sellerId },
+        data: { paymentGateway: "cod" },
+      });
+      return res.json({ message: "Cash on Delivery enabled" });
     }
 
-    // Store on seller record — in production encrypt keySecret with AES before storing
-    // Using prisma json field for now — add razorpayKeyId/Secret to schema if preferred
-    // For MVP: store as-is, production: encrypt with crypto.createCipheriv
+    // Resolve key fields per gateway
+    const resolvedKeyId = keyId || merchantId || "";
+    const resolvedKeySecret = keySecret || salt || "";
+
+    if (!resolvedKeyId || !resolvedKeySecret) {
+      return res.status(400).json({ message: "Both key fields are required for this gateway" });
+    }
+
+    // Gateway-specific validation
+    if (gateway === "razorpay" && !resolvedKeyId.startsWith("rzp_")) {
+      return res.status(400).json({ message: "Invalid Razorpay Key ID — must start with rzp_" });
+    }
+
+    if (resolvedKeyId.length < 8 || resolvedKeySecret.length < 8) {
+      return res.status(400).json({ message: "Keys appear too short — please double check" });
+    }
+
+    // Store on Seller — in production, encrypt resolvedKeySecret with AES-256
+    // e.g. const encrypted = encrypt(resolvedKeySecret, process.env.ENCRYPTION_KEY)
     await prisma.seller.update({
       where: { id: sellerId },
       data: {
-        // These fields need to be added to schema — see schema additions below
-        // razorpayKeyId:     keyId,
-        // razorpayKeySecret: keySecret,
-        // For now just acknowledge receipt
+        paymentGateway: gateway,
+        gatewayKeyId: resolvedKeyId,
+        gatewayKeySecret: resolvedKeySecret, // ⚠ encrypt before production
       },
     });
 
-    return res.json({ message: "Payment keys saved successfully" });
+    return res.json({ message: `${gateway} payment gateway configured successfully` });
   } catch (err) {
     next(err);
   }
@@ -169,7 +185,6 @@ export const savePaymentKeys = async (
 
 /* ─────────────────────────────────────────────
    POST /api/onboarding/channels
-   Save connected channel credentials
 ───────────────────────────────────────────── */
 export const saveChannels = async (
   req: AuthRequest,
@@ -181,32 +196,35 @@ export const saveChannels = async (
     if (!sellerId) return res.status(403).json({ message: "Seller account required" });
 
     const { channels } = req.body;
-    // channels: { whatsapp?: { phone, apiKey }, telegram?: { botToken }, facebook?: { pageId, accessToken } }
-
     if (!channels || typeof channels !== "object") {
       return res.status(400).json({ message: "channels object required" });
     }
 
-    // Validate whatsapp if provided
+    const updateData: any = {};
+
     if (channels.whatsapp) {
       if (!channels.whatsapp.phone || !channels.whatsapp.apiKey) {
-        return res.status(400).json({ message: "WhatsApp requires phone number and API key" });
+        return res.status(400).json({ message: "WhatsApp requires phone and API key" });
       }
+      updateData.waPhone = channels.whatsapp.phone;
+      updateData.waApiKey = channels.whatsapp.apiKey;
     }
 
-    // Validate telegram if provided
     if (channels.telegram) {
-      if (!channels.telegram.botToken) {
-        return res.status(400).json({ message: "Telegram requires a bot token" });
-      }
-      if (!channels.telegram.botToken.includes(":")) {
+      if (!channels.telegram.botToken || !channels.telegram.botToken.includes(":")) {
         return res.status(400).json({ message: "Invalid Telegram bot token format" });
       }
+      updateData.tgBotToken = channels.telegram.botToken;
     }
 
-    // Store channels — add to schema as needed
-    // For now just acknowledge
-    return res.json({ message: "Channels saved", connected: Object.keys(channels) });
+    if (Object.keys(updateData).length > 0) {
+      await prisma.seller.update({ where: { id: sellerId }, data: updateData });
+    }
+
+    return res.json({
+      message: "Channels saved",
+      connected: Object.keys(channels),
+    });
   } catch (err) {
     next(err);
   }
@@ -214,7 +232,6 @@ export const saveChannels = async (
 
 /* ─────────────────────────────────────────────
    POST /api/onboarding/complete
-   Mark onboarding as done, return dashboard redirect
 ───────────────────────────────────────────── */
 export const completeOnboarding = async (
   req: AuthRequest,
@@ -225,12 +242,9 @@ export const completeOnboarding = async (
     const sellerId = req.user?.sellerId;
     if (!sellerId) return res.status(403).json({ message: "Seller account required" });
 
-    // Mark seller as onboarded — add onboardedAt field to schema
     await prisma.seller.update({
       where: { id: sellerId },
-      data: {
-        // onboardedAt: new Date(),  — add this field to schema
-      },
+      data: { onboardedAt: new Date() },
     });
 
     return res.json({ message: "Onboarding complete", redirect: "/dashboard" });
@@ -241,7 +255,6 @@ export const completeOnboarding = async (
 
 /* ─────────────────────────────────────────────
    GET /api/onboarding/status
-   Check what steps seller has completed
 ───────────────────────────────────────────── */
 export const getOnboardingStatus = async (
   req: AuthRequest,
@@ -254,19 +267,19 @@ export const getOnboardingStatus = async (
 
     const seller = await prisma.seller.findUnique({
       where: { id: sellerId },
-      include: { products: { take: 1 } },
     });
-
     if (!seller) return res.status(404).json({ message: "Seller not found" });
 
     const productCount = await prisma.product.count({ where: { sellerId } });
 
     return res.json({
       businessInfo: !!seller.businessName,
-      catalog:      productCount > 0,
-      payments:     false, // update when schema fields added
-      channels:     false, // update when schema fields added
+      catalog: productCount > 0,
+      payments: !!seller.paymentGateway,
+      channels: !!(seller.waPhone || seller.tgBotToken),
+      onboarded: !!seller.onboardedAt,
       productCount,
+      gateway: seller.paymentGateway || null,
     });
   } catch (err) {
     next(err);

@@ -104,6 +104,21 @@ model Seller {
   gstNumber    String?
   phone        String?
   createdAt    DateTime @default(now())
+  
+  // Onboarding
+  onboardedAt      DateTime?
+  industry         String?
+  businessSize     String?
+
+  // Payment gateway (encrypted in production)
+  paymentGateway   String?   // "razorpay" | "payu" | "cashfree" | "skydo" | "cod"
+  gatewayKeyId     String?   // Key ID / App ID / Merchant Key
+  gatewayKeySecret String?   // Key Secret / Salt (encrypt before storing!)
+  
+  // Channels
+  waPhone    String?  // WhatsApp phone (for WhatsApp Business API)
+  waApiKey   String?  // WhatsApp API key (if using third-party like Twilio/WATI)
+  tgBotToken String?  // Telegram bot token
 
   users     User[]
   products  Product[]
