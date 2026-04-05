@@ -22,6 +22,7 @@ import conversationRoutes from "./routes/conversation.routes"; // ✅ NEW
 import hypnatexRoutes from "./routes/hypnatex.routes";
 import hypnatexInternalRoutes from "./routes/hypnatex.internal.routes";
 import onboardingRoutes from "./routes/onboarding.routes";
+import paymentRoutes from "./routes/payment.routes";
 
 
 // Middleware
@@ -88,6 +89,8 @@ app.use("/api/customers", customerRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/search", searchRouter);
 app.use("/api/conversations", conversationRoutes);
+app.use("/api/payments", paymentRoutes);
+
 
 // IMPORTANT: internal BEFORE public
 app.use("/api/hypnate-x/internal", hypnatexInternalRoutes);
