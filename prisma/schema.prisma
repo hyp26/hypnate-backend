@@ -261,6 +261,8 @@ model Product {
   stock       Int      @default(0)
   imageUrl    String?
   createdAt   DateTime @default(now())
+  mrp         Float?    // Maximum Retail Price (fake/crossed-out price)
+  sizes       String[]  // e.g. ["XS", "S", "M", "L", "XL"] or ["6", "7", "8"] for shoes
 
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id])
