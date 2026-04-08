@@ -23,6 +23,7 @@ import hypnatexRoutes from "./routes/hypnatex.routes";
 import hypnatexInternalRoutes from "./routes/hypnatex.internal.routes";
 import onboardingRoutes from "./routes/onboarding.routes";
 import paymentRoutes from "./routes/payment.routes";
+import waitlistRoutes from "./routes/waitlist.routes";
 
 
 // Middleware
@@ -90,6 +91,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/search", searchRouter);
 app.use("/api/conversations", conversationRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/waitlist", waitlistRoutes);
 
 
 // IMPORTANT: internal BEFORE public

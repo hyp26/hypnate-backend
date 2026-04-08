@@ -376,3 +376,13 @@ model Notification {
   @@index([sellerId, isRead])
   @@index([sellerId, createdAt])
 }
+
+// ─────────────────────────────────────────────
+// MARKETING / WAITLIST
+// ─────────────────────────────────────────────
+
+model WaitlistSubscriber {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  createdAt DateTime @default(now())
+}
