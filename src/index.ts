@@ -25,6 +25,9 @@ import onboardingRoutes from "./routes/onboarding.routes";
 import paymentRoutes from "./routes/payment.routes";
 import waitlistRoutes from "./routes/waitlist.routes";
 
+// webhooks
+import telegramWebhookRoutes from "./routes/webhook/telegram";
+import messageRoutes from "./routes/webhook/message.routes";
 
 // Middleware
 import errorHandler from "./middleware/errorHandler";
@@ -99,6 +102,10 @@ app.use("/api/hypnate-x/internal", hypnatexInternalRoutes);
 app.use("/api/hypnate-x", hypnatexRoutes);
 
 app.use("/api/onboarding", onboardingRoutes);
+
+/* ---------------- WEBHOOKS ---------------- */
+app.use("/api/webhooks", telegramWebhookRoutes);
+app.use("/api/messages", messageRoutes);
 
 /* ---------------- STATIC ---------------- */
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));

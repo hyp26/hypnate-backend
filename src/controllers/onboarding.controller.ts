@@ -272,11 +272,17 @@ export const getOnboardingStatus = async (
 
     const productCount = await prisma.product.count({ where: { sellerId } });
 
+    const connectedChannels = await prisma.channelConnection.count({
+      where: {
+        sellerId,
+        isActive: true,
+      },
+    });
+
     return res.json({
       businessInfo: !!seller.businessName,
       catalog: productCount > 0,
       payments: !!seller.paymentGateway,
-      channels: !!(seller.waPhone || seller.tgBotToken),
       onboarded: !!seller.onboardedAt,
       productCount,
       gateway: seller.paymentGateway || null,

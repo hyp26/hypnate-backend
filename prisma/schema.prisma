@@ -29,6 +29,18 @@ enum MessageSender {
   BOT
 }
 
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageStatus {
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
 enum ConversationStatus {
   OPEN
   RESOLVED
@@ -79,7 +91,6 @@ model User {
   seller   Seller? @relation(fields: [sellerId], references: [id])
 
   passwordResets PasswordReset[]
-
   createdAt DateTime @default(now())
 }
 
@@ -93,139 +104,145 @@ model PasswordReset {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-
 // ─────────────────────────────────────────────
 // SELLER
-// ─────────────────────────────────────────────
+// ───────────────────────────────────────────── 
 
 model Seller {
   id           Int      @id @default(autoincrement())
   businessName String
   gstNumber    String?
   phone        String?
-  createdAt    DateTime @default(now())
-  
-  // Onboarding
-  onboardedAt      DateTime?
-  industry         String?
-  businessSize     String?
 
-  // Payment gateway (encrypted in production)
-  paymentGateway   String?   // "razorpay" | "payu" | "cashfree" | "skydo" | "cod"
-  gatewayKeyId     String?   // Key ID / App ID / Merchant Key
-  gatewayKeySecret String?   // Key Secret / Salt (encrypt before storing!)
-  
-  // Channels
-  waPhone    String?  // WhatsApp phone (for WhatsApp Business API)
-  waApiKey   String?  // WhatsApp API key (if using third-party like Twilio/WATI)
-  tgBotToken String?  // Telegram bot token
+  onboardedAt  DateTime?
+  industry     String?
+  businessSize String?
 
-  users     User[]
-  products  Product[]
-  orders    Order[]
-  uploads   Upload[]
-  customers Customer[]
-  stores    Store[]
+  paymentGateway   String?
+  gatewayKeyId     String?
+  gatewayKeySecret String?
+
+  createdAt DateTime @default(now())
+
+  users         User[]
+  products      Product[]
+  orders        Order[]
+  uploads       Upload[]
+  customers     Customer[]
+  stores        Store[]
   conversations Conversation[]
   notifications Notification[]
+  channels      ChannelConnection[]
 }
 
 // ─────────────────────────────────────────────
-// HYPNATE X
-// ─────────────────────────────────────────────
+// CHANNEL CONNECTIONS
+// ───────────────────────────────────────────── 
 
-model Theme {
-  id          String  @id           // "aurora", "saffron", etc.
-  name        String
-  category    String               // fashion | food | electronics | beauty | general | furniture
-  previewBg   String
-  accentColor String
-  layout      String               // editorial | bold | grid | luxury | minimal
-  tags        String[]
-  active      Boolean @default(true)
+model ChannelConnection {
+  id        Int      @id @default(autoincrement())
+  sellerId  Int
+  seller    Seller   @relation(fields: [sellerId], references: [id])
 
-  stores Store[]
+  platform  Platform
+
+  accessToken       String?
+  refreshToken      String?
+  externalAccountId String?
+
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([sellerId])
+  @@index([platform])
 }
 
-model Store {
-  id           Int         @id @default(autoincrement())
-  sellerId     Int                  // ✅ removed @unique — one seller CAN rebuild
-  seller       Seller      @relation(fields: [sellerId], references: [id])
+// ─────────────────────────────────────────────
+// CONVERSATION SYSTEM
+// ───────────────────────────────────────────── 
 
-  themeId      String
-  theme        Theme       @relation(fields: [themeId], references: [id])
+model Conversation {
+  id           Int      @id @default(autoincrement())
+  sellerId     Int
+  seller       Seller   @relation(fields: [sellerId], references: [id])
 
-  storeName    String
-  slug         String      @unique
-  logoUrl      String?
-  customDomain String?     @unique
+  platform     Platform
+  status       ConversationStatus @default(OPEN)
 
-  status       StoreStatus @default(BUILDING)
-  publishedAt  DateTime?
+  customerId   Int?
+  customer     Customer? @relation(fields: [customerId], references: [id])
 
-  // AI-generated content
-  homepageHtml String?     @db.Text
-  aboutHtml    String?     @db.Text
-  metaTitle    String?
-  metaDesc     String?
+  customerName  String
+  customerPhone String?
+  customerEmail String?
+
+  externalUserId   String
+  externalThreadId String?
+
+  unreadCount  Int @default(0)
+  lastMessage  String?
+  lastMessageAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  buildJobs BuildJob[]
+  messages Message[]
 
+  @@unique([sellerId, platform, externalUserId])
   @@index([sellerId])
-  @@index([slug])
-}
-
-model BuildJob {
-  id       Int    @id @default(autoincrement())
-  storeId  Int
-  store    Store  @relation(fields: [storeId], references: [id])
-  sellerId Int                  // ✅ kept — useful for direct queries without join
-
-  status      BuildStatus @default(QUEUED)
-  currentStep String?
-  errorMsg    String?
-
-  // Inputs snapshotted at build time
-  themeId     String
-  storeName   String
-  logoUrl     String?
-  catalogJson Json?              // product catalog at time of build
-
-  // Outputs
-  deployedUrl String?
-  buildLog    Json?              // [{ time, message }]
-
-  startedAt   DateTime?
-  completedAt DateTime?
-  createdAt   DateTime @default(now())
-
-  @@index([storeId])
-  @@index([sellerId])
+  @@index([platform])
   @@index([status])
 }
 
 // ─────────────────────────────────────────────
-// COMMERCE
+// MESSAGES
+// ───────────────────────────────────────────── 
+
+model Message {
+  id             Int @id @default(autoincrement())
+
+  conversationId Int
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  sender     MessageSender
+  direction  MessageDirection
+  status     MessageStatus @default(SENT)
+
+  text       String @db.Text
+  type       String @default("text")
+
+  mediaUrl   String?
+  metadata   Json?
+
+  isRead     Boolean @default(false)
+
+  createdAt  DateTime @default(now())
+
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
+}
+
 // ─────────────────────────────────────────────
+// COMMERCE
+// ───────────────────────────────────────────── 
 
 model Customer {
   id       Int     @id @default(autoincrement())
   sellerId Int
+  seller   Seller @relation(fields: [sellerId], references: [id])
+
   name     String
   email    String?
   phone    String?
 
-  totalOrders Int       @default(0)
-  totalSpent  Float     @default(0)
+  totalOrders Int   @default(0)
+  totalSpent  Float @default(0)
+
   lastOrderAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  seller Seller  @relation(fields: [sellerId], references: [id])
   orders Order[]
   conversations Conversation[]
 
@@ -241,9 +258,10 @@ model Order {
   customerId Int?
   customer   Customer? @relation(fields: [customerId], references: [id])
 
-  customerName    String
-  customerPhone   String?
-  customerEmail   String?
+  customerName  String
+  customerPhone String?
+  customerEmail String?
+
   shippingAddress String?
 
   subtotal    Float? @default(0)
@@ -261,36 +279,42 @@ model Order {
 
   products ProductOrder[]
 
-  // ✅ recommended indexes (from earlier audit)
   @@index([sellerId])
   @@index([customerId])
   @@index([status])
 }
 
 model Product {
-  id          Int      @id @default(autoincrement())
-  name        String
-  description String?
-  category    String?
-  price       Float
-  stock       Int      @default(0)
-  imageUrl    String?
-  createdAt   DateTime @default(now())
-  mrp         Float?    // Maximum Retail Price (fake/crossed-out price)
-  sizes       String[]  // e.g. ["XS", "S", "M", "L", "XL"] or ["6", "7", "8"] for shoes
+  id          Int @id @default(autoincrement())
 
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id])
 
+  name        String
+  description String?
+  category    String?
+
+  price Float
+  mrp   Float?
+
+  stock Int @default(0)
+  sizes String[]
+
+  imageUrl String?
+
+  createdAt DateTime @default(now())
+
   productOrders ProductOrder[]
 
-  @@index([sellerId]) // ✅ recommended from earlier audit
+  @@index([sellerId])
 }
 
 model ProductOrder {
-  id              Int    @id @default(autoincrement())
-  productId       Int
-  orderId         Int
+  id Int @id @default(autoincrement())
+
+  productId Int
+  orderId   Int
+
   quantity        Int
   priceAtPurchase Float?
 
@@ -299,90 +323,136 @@ model ProductOrder {
 }
 
 model Upload {
-  id        Int      @id @default(autoincrement())
-  sellerId  Int
-  seller    Seller   @relation(fields: [sellerId], references: [id])
-  filename  String
-  url       String
+  id Int @id @default(autoincrement())
+
+  sellerId Int
+  seller   Seller @relation(fields: [sellerId], references: [id])
+
+  filename String
+  url      String
+
   createdAt DateTime @default(now())
 }
 
-model Conversation {
-  id           Int                @id @default(autoincrement())
-  sellerId     Int
-  seller       Seller             @relation(fields: [sellerId], references: [id])
- 
-  platform     Platform
-  status       ConversationStatus @default(OPEN)
- 
-  // Customer info (may or may not be linked to Customer model)
-  customerId   Int?
-  customer     Customer?          @relation(fields: [customerId], references: [id])
-  customerName String
-  customerPhone String?
-  customerEmail String?
- 
-  // Platform-specific external IDs (for webhook matching)
-  externalId   String?            // e.g. WhatsApp phone number, IG user ID
- 
-  unreadCount  Int                @default(0)
-  lastMessage  String?
-  lastMessageAt DateTime?
- 
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
- 
-  messages     Message[]
- 
-  @@index([sellerId])
-  @@index([platform])
-  @@index([status])
-  @@index([sellerId, platform])
-}
-
-model Message {
-  id             Int            @id @default(autoincrement())
-  conversationId Int
-  conversation   Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
- 
-  sender         MessageSender
-  text           String         @db.Text
-  type           String         @default("text") // text | image | payment | product
-  mediaUrl       String?        // for image/file messages
-  metadata       Json?          // any platform-specific extra data
- 
-  isRead         Boolean        @default(false)
-  createdAt      DateTime       @default(now())
- 
-  @@index([conversationId])
-  @@index([conversationId, createdAt])
-}
+// ─────────────────────────────────────────────
+// NOTIFICATIONS
+// ───────────────────────────────────────────── 
 
 model Notification {
-  id       Int              @id @default(autoincrement())
+  id       Int @id @default(autoincrement())
+
   sellerId Int
-  seller   Seller           @relation(fields: [sellerId], references: [id], onDelete: Cascade)
- 
-  type     NotificationType
-  title    String
-  body     String
-  isRead   Boolean          @default(false)
-  link     String?          // optional deep-link e.g. "/orders/123"
-  meta     Json?            // any extra data
- 
+  seller   Seller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+
+  type  NotificationType
+  title String
+  body  String
+
+  isRead Boolean @default(false)
+
+  link String?
+  meta Json?
+
+  priority String?
+
   createdAt DateTime @default(now())
- 
+
   @@index([sellerId])
   @@index([sellerId, isRead])
   @@index([sellerId, createdAt])
 }
 
 // ─────────────────────────────────────────────
-// MARKETING / WAITLIST
+// STORE BUILDER
+// ─────────────────────────────────────────────
+
+model Theme {
+  id String @id
+
+  name        String
+  category    String
+  previewBg   String
+  accentColor String
+  layout      String
+
+  tags   String[]
+  active Boolean @default(true)
+
+  stores Store[]
+}
+
+model Store {
+  id Int @id @default(autoincrement())
+
+  sellerId Int
+  seller   Seller @relation(fields: [sellerId], references: [id])
+
+  themeId String
+  theme   Theme @relation(fields: [themeId], references: [id])
+
+  storeName String
+  slug      String @unique
+
+  logoUrl      String?
+  customDomain String? @unique
+
+  status StoreStatus @default(BUILDING)
+
+  homepageHtml String? @db.Text
+  aboutHtml    String? @db.Text
+
+  metaTitle String?
+  metaDesc  String?
+
+  publishedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  buildJobs BuildJob[]
+
+  @@index([sellerId])
+}
+
+model BuildJob {
+  id Int @id @default(autoincrement())
+
+  storeId  Int
+  sellerId Int
+
+  store Store @relation(fields: [storeId], references: [id])
+
+  status      BuildStatus @default(QUEUED)
+  currentStep String?
+  errorMsg    String?
+
+  themeId   String
+  storeName String
+  logoUrl   String?
+
+  catalogJson Json?
+
+  deployedUrl String?
+  buildLog    Json?
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([storeId])
+  @@index([sellerId])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────
+// WAITLIST
 // ─────────────────────────────────────────────
 
 model WaitlistSubscriber {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
+  id Int @id @default(autoincrement())
+
+  email String @unique
+
   createdAt DateTime @default(now())
 }
