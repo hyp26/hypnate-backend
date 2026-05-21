@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { telegramWebhook } from "../../controllers/webhook/telegram/telegram.controller";
+import { telegramWebhook } from "../../controllers/webhook/telegram/incoming.controller";
 
 const router = Router();
 

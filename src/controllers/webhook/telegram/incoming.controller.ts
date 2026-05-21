@@ -29,7 +29,6 @@ export const telegramWebhook = async (req: Request, res: Response) => {
             },
         });
 
-        // ❗ No connection → ignore silently (important for webhook stability)
         if (!connection || !connection.accessToken) {
             console.error("No active Telegram connection");
             return res.sendStatus(200);
@@ -37,7 +36,7 @@ export const telegramWebhook = async (req: Request, res: Response) => {
 
         const BOT_TOKEN = connection.accessToken;
 
-        // 🔥 Send auto reply (non-blocking safety)
+        // 🔥 Safe auto-reply
         try {
             await axios.post(
                 `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
@@ -46,9 +45,11 @@ export const telegramWebhook = async (req: Request, res: Response) => {
                     text: "Got your message 🚀",
                 }
             );
-        } catch (err) {
-            console.error("Telegram reply failed:", err?.response?.data || err.message);
-            // ❗ DO NOT break flow
+        } catch (err: any) {
+            console.error(
+                "Telegram reply failed:",
+                err?.response?.data || err.message
+            );
         }
 
         // 1. FIND OR CREATE CONVERSATION
