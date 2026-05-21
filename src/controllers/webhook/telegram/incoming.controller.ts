@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import prisma from "../../prisma/client";
+import prisma from "../../../prisma/client";
 import axios from "axios";
 
 export const telegramWebhook = async (req: Request, res: Response) => {
@@ -12,15 +12,44 @@ export const telegramWebhook = async (req: Request, res: Response) => {
         const text = message.text || "";
         const name = message.from?.first_name || "User";
 
-        const sellerId = 1; // 🔥 TEMP FIX
+        const sellerId = Number(req.params.sellerId);
 
-        // 🔥 AUTO REPLY
-        const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+        // ❗ Validate sellerId
+        if (!sellerId) {
+            console.error("Invalid sellerId");
+            return res.sendStatus(200);
+        }
 
-        await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-            chat_id: chatId,
-            text: "Got your message 🚀",
+        // 🔥 Get seller's bot
+        const connection = await prisma.channelConnection.findFirst({
+            where: {
+                sellerId,
+                platform: "TELEGRAM",
+                isActive: true,
+            },
         });
+
+        // ❗ No connection → ignore silently (important for webhook stability)
+        if (!connection || !connection.accessToken) {
+            console.error("No active Telegram connection");
+            return res.sendStatus(200);
+        }
+
+        const BOT_TOKEN = connection.accessToken;
+
+        // 🔥 Send auto reply (non-blocking safety)
+        try {
+            await axios.post(
+                `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
+                {
+                    chat_id: chatId,
+                    text: "Got your message 🚀",
+                }
+            );
+        } catch (err) {
+            console.error("Telegram reply failed:", err?.response?.data || err.message);
+            // ❗ DO NOT break flow
+        }
 
         // 1. FIND OR CREATE CONVERSATION
         let conversation = await prisma.conversation.findFirst({
@@ -64,7 +93,7 @@ export const telegramWebhook = async (req: Request, res: Response) => {
 
         return res.sendStatus(200);
     } catch (err) {
-        console.error(err);
+        console.error("Webhook error:", err);
         return res.sendStatus(500);
     }
 };

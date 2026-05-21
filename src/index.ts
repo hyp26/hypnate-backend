@@ -18,12 +18,13 @@ import authRoutes from "./routes/auth.routes";
 import analyticsRoutes from "./routes/analytics.routes";
 import customerRoutes from "./routes/customer.routes";
 import notificationRoutes, { searchRouter } from "./routes/notification.routes";
-import conversationRoutes from "./routes/conversation.routes"; // ✅ NEW
+import conversationRoutes from "./routes/conversation.routes";
 import hypnatexRoutes from "./routes/hypnatex.routes";
 import hypnatexInternalRoutes from "./routes/hypnatex.internal.routes";
 import onboardingRoutes from "./routes/onboarding.routes";
 import paymentRoutes from "./routes/payment.routes";
 import waitlistRoutes from "./routes/waitlist.routes";
+import channelRoutes from "./routes/channel.routes";
 
 // webhooks
 import telegramWebhookRoutes from "./routes/webhook/telegram";
@@ -95,6 +96,7 @@ app.use("/api/search", searchRouter);
 app.use("/api/conversations", conversationRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/waitlist", waitlistRoutes);
+app.use("/api/channels", channelRoutes);
 
 
 // IMPORTANT: internal BEFORE public
