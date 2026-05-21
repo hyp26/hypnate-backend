@@ -6,10 +6,13 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import path from "path";
 
+// 🔥 NEW
+import { createServer } from "http";
+import { Server } from "socket.io";
+
 dotenv.config();
 
 // Routes
-
 import dashboardRoutes from "./routes/dashboard.routes";
 import productRoutes from "./routes/product.routes";
 import uploadRoutes from "./routes/upload.routes";
@@ -26,7 +29,7 @@ import paymentRoutes from "./routes/payment.routes";
 import waitlistRoutes from "./routes/waitlist.routes";
 import channelRoutes from "./routes/channel.routes";
 
-// webhooks
+// Webhooks
 import telegramWebhookRoutes from "./routes/webhook/telegram";
 import messageRoutes from "./routes/webhook/message.routes";
 
@@ -98,7 +101,6 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/waitlist", waitlistRoutes);
 app.use("/api/channels", channelRoutes);
 
-
 // IMPORTANT: internal BEFORE public
 app.use("/api/hypnate-x/internal", hypnatexInternalRoutes);
 app.use("/api/hypnate-x", hypnatexRoutes);
@@ -118,8 +120,39 @@ app.get("/api/health", (_, res) => res.json({ status: "ok" }));
 /* ---------------- ERROR HANDLER ---------------- */
 app.use(errorHandler);
 
-/* ---------------- SERVER ---------------- */
+/* ---------------- SOCKET SERVER ---------------- */
+
+// 🔥 Create HTTP server
+const httpServer = createServer(app);
+
+// 🔥 Attach Socket.io
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*",
+  },
+});
+
+// 🔥 Make io available in controllers
+app.set("io", io);
+
+// 🔥 Handle socket connections
+io.on("connection", (socket) => {
+  console.log("User connected:", socket.id);
+
+  // Join conversation room
+  socket.on("join_conversation", (conversationId) => {
+    socket.join(`room_${conversationId}`);
+    console.log(`Joined room_${conversationId}`);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("User disconnected");
+  });
+});
+
+/* ---------------- START SERVER ---------------- */
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
+
+httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
