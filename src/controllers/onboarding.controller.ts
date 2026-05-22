@@ -291,3 +291,46 @@ export const getOnboardingStatus = async (
     next(err);
   }
 };
+
+/* ─────────────────────────────────────────────
+   GET /api/onboarding/me
+   Returns existing onboarding data (for prefill)
+───────────────────────────────────────────── */
+export const getOnboardingData = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const sellerId = req.user?.sellerId;
+
+    if (!sellerId) {
+      return res.status(403).json({ message: "Seller account required" });
+    }
+
+    const seller = await prisma.seller.findUnique({
+      where: { id: sellerId },
+      select: {
+        businessName: true,
+        phone: true,
+        gstNumber: true,
+        industry: true,
+        businessSize: true,
+      },
+    });
+
+    if (!seller) {
+      return res.status(404).json({ message: "Seller not found" });
+    }
+
+    return res.json({
+      businessName: seller.businessName || "",
+      phone: seller.phone || "",
+      gstNumber: seller.gstNumber || "",
+      industry: seller.industry || "",
+      size: seller.businessSize || "",
+    });
+  } catch (err) {
+    next(err);
+  }
+};

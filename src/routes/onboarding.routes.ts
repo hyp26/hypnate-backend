@@ -7,6 +7,7 @@ import {
   saveChannels,
   completeOnboarding,
   getOnboardingStatus,
+  getOnboardingData,
 } from "../controllers/onboarding.controller";
 
 const router = Router();
@@ -15,6 +16,8 @@ const router = Router();
 router.use(verifyToken as RequestHandler);
 
 router.get("/status",    getOnboardingStatus as RequestHandler);
+router.get("/me", getOnboardingData as RequestHandler);
+
 router.post("/business", saveBusinessInfo    as RequestHandler);
 router.post("/catalog",  uploadCatalog       as RequestHandler);
 router.post("/payments", savePaymentKeys     as RequestHandler);
