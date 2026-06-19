@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
-import { createNotification } from "./notification.controller";
+import { createNotification } from "../services/notification.service";
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;

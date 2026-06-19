@@ -1,32 +1,13 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
-import { AuthRequest } from "../middleware/authMiddleware";
-
-// ─────────────────────────────────────────────
-// HELPER
-// ─────────────────────────────────────────────
-const resolveSellerId = async (req: Request): Promise<number | undefined> => {
-  const authReq = req as AuthRequest;
-
-  if (authReq.user?.sellerId) return authReq.user.sellerId;
-
-  if (authReq.user?.id) {
-    const user = await prisma.user.findUnique({
-      where: { id: authReq.user.id },
-      select: { sellerId: true },
-    });
-    return user?.sellerId ?? undefined;
-  }
-
-  return undefined;
-};
+import { getSellerId } from "../services/seller.service";
 
 // ─────────────────────────────────────────────
 // GET STATS
 // ─────────────────────────────────────────────
 export const getConversationStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     const [total, open, pending, resolved, unreadAgg] = await Promise.all([
@@ -57,7 +38,7 @@ export const getConversationStats = async (req: Request, res: Response, next: Ne
 // ─────────────────────────────────────────────
 export const getConversations = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     const platform = req.query.platform as string | undefined;
@@ -94,7 +75,7 @@ export const getConversationById = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     const id = Number(req.params.id);
@@ -119,7 +100,7 @@ export const updateConversationStatus = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     const id = Number(req.params.id);
@@ -129,10 +110,23 @@ export const updateConversationStatus = async (
       return res.status(400).json({ message: "Invalid status" });
     }
 
-    const updated = await prisma.conversation.update({
-      where: { id },
-      data: { status },
+    const existing = await prisma.conversation.findFirst({
+    where: {
+      id,
+      sellerId,
+    },
+  });
+
+  if (!existing) {
+    return res.status(404).json({
+      message: "Conversation not found",
     });
+  }
+
+  const updated = await prisma.conversation.update({
+    where: { id },
+    data: { status },
+  });
 
     res.json(updated);
   } catch (err) {
@@ -145,7 +139,7 @@ export const updateConversationStatus = async (
 // ─────────────────────────────────────────────
 export const getMessages = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     const id = Number(req.params.id);
@@ -177,7 +171,7 @@ export const getMessages = async (req: Request, res: Response, next: NextFunctio
 // ─────────────────────────────────────────────
 export const sendMessage = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     const id = Number(req.params.id);
@@ -206,98 +200,6 @@ export const sendMessage = async (req: Request, res: Response, next: NextFunctio
     });
 
     res.json(message);
-  } catch (err) {
-    next(err);
-  }
-};
-
-// ─────────────────────────────────────────────
-// WEBHOOK (CORE)
-// ─────────────────────────────────────────────
-
-export const verifyWebhook = (req: Request, res: Response) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === process.env.WEBHOOK_VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
-  } else {
-    return res.sendStatus(403);
-  }
-};
-
-export const receiveWebhook = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const platform = req.params.platform.toUpperCase();
-    const body = req.body;
-
-    let externalUserId: string | undefined;
-    let customerName = "User";
-    let messageText = "[message]";
-    let customerPhone: string | undefined;
-
-    if (platform === "TELEGRAM") {
-      const msg = body?.message;
-      if (!msg) return res.sendStatus(200);
-
-      externalUserId = String(msg.from?.id);
-      customerName = msg.from?.first_name || "Telegram User";
-      messageText = msg.text || "[media]";
-    }
-
-    if (!externalUserId) return res.sendStatus(200); // ✅ FIX
-
-    const sellerId = Number(process.env.DEFAULT_SELLER_ID || "1");
-
-    let conversation = await prisma.conversation.findUnique({
-      where: {
-        sellerId_platform_externalUserId: {
-          sellerId,
-          platform: platform as any,
-          externalUserId,
-        },
-      },
-    });
-
-    if (!conversation) {
-      conversation = await prisma.conversation.create({
-        data: {
-          sellerId,
-          platform: platform as any,
-          customerName,
-          customerPhone: customerPhone ?? null,
-          externalUserId,
-          status: "OPEN",
-          lastMessage: messageText,
-          lastMessageAt: new Date(),
-          unreadCount: 1,
-        },
-      });
-    } else {
-      await prisma.conversation.update({
-        where: { id: conversation.id },
-        data: {
-          lastMessage: messageText,
-          lastMessageAt: new Date(),
-          unreadCount: { increment: 1 },
-          status: "OPEN",
-        },
-      });
-    }
-
-    await prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        sender: "CUSTOMER",
-        direction: "INBOUND", // ✅ FIXED
-        text: messageText,
-        type: "text",
-        isRead: false,
-      },
-    });
-
-    res.sendStatus(200);
   } catch (err) {
     next(err);
   }

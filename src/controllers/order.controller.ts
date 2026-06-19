@@ -1,26 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
-import { createNotification } from "./notification.controller";
-
-/**
- * Resolve sellerId for current user
- */
-const resolveSellerId = async (req: Request): Promise<number | undefined> => {
-  const authReq = req as AuthRequest;
-
-  if (authReq.user?.sellerId) return authReq.user.sellerId;
-
-  if (authReq.user?.id) {
-    const user = await prisma.user.findUnique({
-      where: { id: authReq.user.id },
-      select: { sellerId: true },
-    });
-    return user?.sellerId ?? undefined;
-  }
-
-  return undefined;
-};
+import { createNotification } from "../services/notification.service";
+import { getSellerId } from "../services/seller.service";
 
 /**
  * CREATE ORDER
@@ -36,7 +18,7 @@ export const createOrder = async (
       return res.status(401).json({ message: "Unauthorized" });
     }
 
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req as AuthRequest);
     if (!sellerId) {
       return res.status(400).json({ message: "Seller account not found" });
     }
@@ -193,7 +175,7 @@ export const getOrders = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req as AuthRequest);
     if (!sellerId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -229,7 +211,7 @@ export const getOrderById = async (
       return res.status(400).json({ message: "Invalid order ID" });
     }
 
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req as AuthRequest);
     if (!sellerId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -270,7 +252,7 @@ export const updateOrderStatus = async (
       return res.status(400).json({ message: "Invalid request" });
     }
 
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req as AuthRequest);
     if (!sellerId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -329,7 +311,7 @@ export const updatePaymentStatus = async (
       return res.status(400).json({ message: "Invalid request" });
     }
 
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req as AuthRequest);
     if (!sellerId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -389,7 +371,7 @@ export const addTracking = async (
       return res.status(400).json({ message: "Invalid request" });
     }
 
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req as AuthRequest);
     if (!sellerId) {
       return res.status(401).json({ message: "Unauthorized" });
     }

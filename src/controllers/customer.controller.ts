@@ -1,28 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
-import { AuthRequest } from "../middleware/authMiddleware";
-
-/**
- * Resolve sellerId from authenticated user
- */
-const resolveSellerId = async (req: Request): Promise<number | undefined> => {
-  const authReq = req as AuthRequest;
-
-  if (authReq.user?.sellerId) {
-    return authReq.user.sellerId;
-  }
-
-  if (authReq.user?.id) {
-    const user = await prisma.user.findUnique({
-      where: { id: authReq.user.id },
-      select: { sellerId: true },
-    });
-
-    return user?.sellerId ?? undefined;
-  }
-
-  return undefined;
-};
+import { getSellerId } from "../services/seller.service";
 
 /**
  * GET /api/customers
@@ -34,7 +12,7 @@ export const getCustomers = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -72,7 +50,7 @@ export const getCustomerStats = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -102,7 +80,7 @@ export const getCustomerById = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -148,7 +126,7 @@ export const updateCustomer = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -193,7 +171,7 @@ export const deleteCustomer = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) {
       return res.status(401).json({ message: "Unauthorized" });
     }

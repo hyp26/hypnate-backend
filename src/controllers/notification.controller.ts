@@ -1,23 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
-
-// ─────────────────────────────────────────────
-// HELPER
-// ─────────────────────────────────────────────
-
-const resolveSellerId = async (req: Request): Promise<number | undefined> => {
-  const authReq = req as AuthRequest;
-  if (authReq.user?.sellerId) return authReq.user.sellerId;
-  if (authReq.user?.id) {
-    const user = await prisma.user.findUnique({
-      where: { id: authReq.user.id },
-      select: { sellerId: true },
-    });
-    return user?.sellerId ?? undefined;
-  }
-  return undefined;
-};
+import { getSellerId } from "../services/seller.service";
 
 // ─────────────────────────────────────────────
 // GET /api/notifications
@@ -30,7 +14,7 @@ export const getNotifications = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req as AuthRequest);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     const [notifications, unreadCount] = await Promise.all([
@@ -61,7 +45,7 @@ export const markOneRead = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req as AuthRequest);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     const id = Number(req.params.id);
@@ -90,7 +74,7 @@ export const markAllRead = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req as AuthRequest);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     await prisma.notification.updateMany({
@@ -115,7 +99,7 @@ export const deleteNotification = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req as AuthRequest);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     const id = Number(req.params.id);
@@ -133,37 +117,6 @@ export const deleteNotification = async (
   }
 };
 
-// ─────────────────────────────────────────────
-// POST /api/notifications/internal
-// Internal helper — call this from other controllers
-// to create notifications automatically.
-// e.g. call after order creation, payment, low stock
-// ─────────────────────────────────────────────
-
-export const createNotification = async (params: {
-  sellerId: number;
-  type: string;
-  title: string;
-  body: string;
-  link?: string;
-  meta?: object;
-}) => {
-  try {
-    await prisma.notification.create({
-      data: {
-        sellerId: params.sellerId,
-        type: params.type as any,
-        title: params.title,
-        body: params.body,
-        link: params.link ?? null,
-        meta: params.meta ?? undefined,
-      },
-    });
-  } catch (err) {
-    // Non-fatal — log but don't throw
-    console.error("Failed to create notification:", err);
-  }
-};
 
 // ─────────────────────────────────────────────
 // GET /api/search?q=...
@@ -176,7 +129,7 @@ export const globalSearch = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req as AuthRequest);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";

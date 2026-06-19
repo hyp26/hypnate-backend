@@ -1,16 +1,16 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
-import dotenv from "dotenv";
 import path from "path";
 
 // 🔥 NEW
 import { createServer } from "http";
 import { Server } from "socket.io";
-
-dotenv.config();
 
 // Routes
 import dashboardRoutes from "./routes/dashboard.routes";

@@ -1,6 +1,7 @@
 import { Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
+import { encrypt } from "../services/crypto.service";
 import Papa from "papaparse";
 
 /* ─────────────────────────────────────────────
@@ -168,14 +169,14 @@ export const savePaymentKeys = async (
 
     // Store on Seller — in production, encrypt resolvedKeySecret with AES-256
     // e.g. const encrypted = encrypt(resolvedKeySecret, process.env.ENCRYPTION_KEY)
-    await prisma.seller.update({
-      where: { id: sellerId },
-      data: {
-        paymentGateway: gateway,
-        gatewayKeyId: resolvedKeyId,
-        gatewayKeySecret: resolvedKeySecret, // ⚠ encrypt before production
-      },
-    });
+  await prisma.seller.update({
+    where: { id: sellerId },
+    data: {
+      paymentGateway: gateway,
+      gatewayKeyId: resolvedKeyId,
+      gatewayKeySecret: encrypt(resolvedKeySecret),
+     },
+  });
 
     return res.json({ message: `${gateway} payment gateway configured successfully` });
   } catch (err) {
@@ -193,32 +194,64 @@ export const saveChannels = async (
 ) => {
   try {
     const sellerId = req.user?.sellerId;
-    if (!sellerId) return res.status(403).json({ message: "Seller account required" });
+
+    if (!sellerId) {
+      return res.status(403).json({
+        message: "Seller account required",
+      });
+    }
 
     const { channels } = req.body;
+
     if (!channels || typeof channels !== "object") {
-      return res.status(400).json({ message: "channels object required" });
+      return res.status(400).json({
+        message: "channels object required",
+      });
     }
 
     const updateData: any = {};
 
+    /* ---------- WhatsApp ---------- */
     if (channels.whatsapp) {
-      if (!channels.whatsapp.phone || !channels.whatsapp.apiKey) {
-        return res.status(400).json({ message: "WhatsApp requires phone and API key" });
+      if (
+        !channels.whatsapp.phone ||
+        !channels.whatsapp.apiKey
+      ) {
+        return res.status(400).json({
+          message: "WhatsApp requires phone and API key",
+        });
       }
+
       updateData.waPhone = channels.whatsapp.phone;
-      updateData.waApiKey = channels.whatsapp.apiKey;
+
+      // ✅ Encrypt before storing
+      updateData.waApiKey = encrypt(
+        channels.whatsapp.apiKey
+      );
     }
 
+    /* ---------- Telegram ---------- */
     if (channels.telegram) {
-      if (!channels.telegram.botToken || !channels.telegram.botToken.includes(":")) {
-        return res.status(400).json({ message: "Invalid Telegram bot token format" });
+      if (
+        !channels.telegram.botToken ||
+        !channels.telegram.botToken.includes(":")
+      ) {
+        return res.status(400).json({
+          message: "Invalid Telegram bot token format",
+        });
       }
-      updateData.tgBotToken = channels.telegram.botToken;
+
+      // ✅ Encrypt before storing
+      updateData.tgBotToken = encrypt(
+        channels.telegram.botToken
+      );
     }
 
     if (Object.keys(updateData).length > 0) {
-      await prisma.seller.update({ where: { id: sellerId }, data: updateData });
+      await prisma.seller.update({
+        where: { id: sellerId },
+        data: updateData,
+      });
     }
 
     return res.json({

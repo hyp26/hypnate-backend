@@ -1,20 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
-import { AuthRequest } from "../middleware/authMiddleware";
+import { getSellerId } from "../services/seller.service";
 import Papa from "papaparse";
 
-const resolveSellerId = async (req: Request): Promise<number | undefined> => {
-  const authReq = req as AuthRequest;
-  if (authReq.user?.sellerId) return authReq.user.sellerId;
-  if (authReq.user?.id) {
-    const user = await prisma.user.findUnique({
-      where: { id: authReq.user.id },
-      select: { sellerId: true },
-    });
-    return user?.sellerId ?? undefined;
-  }
-  return undefined;
-};
 
 // ─────────────────────────────────────────────
 // GET /api/analytics/overview
@@ -27,7 +15,7 @@ export const getOverviewAnalytics = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     const days = Math.min(Number(req.query.days) || 7, 90);
@@ -274,7 +262,7 @@ export const exportAnalytics = async (
   next: NextFunction
 ) => {
   try {
-    const sellerId = await resolveSellerId(req);
+    const sellerId = await getSellerId(req);
     if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
 
     const days = Math.min(Number(req.query.days) || 30, 90);

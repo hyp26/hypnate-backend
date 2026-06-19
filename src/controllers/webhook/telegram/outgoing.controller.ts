@@ -1,31 +1,43 @@
 import { Request, Response } from "express";
 import prisma from "../../../prisma/client";
 import axios from "axios";
+import { decrypt } from "../../../services/crypto.service";
 
-export const sendMessage = async (req: Request, res: Response) => {
+export const sendMessage = async (
+  req: Request,
+  res: Response
+) => {
   try {
     const { conversationId, text } = req.body;
 
-    if (!conversationId || !text) {
-      return res.status(400).json({ message: "Missing fields" });
+    if (!conversationId || !text?.trim()) {
+      return res.status(400).json({
+        message: "Missing fields",
+      });
     }
 
-    // 1. Get conversation
+    // Get conversation
     const conversation = await prisma.conversation.findUnique({
-      where: { id: conversationId },
+      where: {
+        id: Number(conversationId),
+      },
     });
 
     if (!conversation) {
-      return res.status(404).json({ message: "Conversation not found" });
+      return res.status(404).json({
+        message: "Conversation not found",
+      });
     }
 
     const chatId = conversation.externalUserId;
 
     if (!chatId) {
-      return res.status(400).json({ message: "Invalid chatId" });
+      return res.status(400).json({
+        message: "Invalid chatId",
+      });
     }
 
-    // 2. Get seller bot connection
+    // Get Telegram connection
     const connection = await prisma.channelConnection.findFirst({
       where: {
         sellerId: conversation.sellerId,
@@ -34,13 +46,16 @@ export const sendMessage = async (req: Request, res: Response) => {
       },
     });
 
-    if (!connection || !connection.accessToken) {
-      return res.status(400).json({ message: "Telegram not connected" });
+    if (!connection?.accessToken) {
+      return res.status(400).json({
+        message: "Telegram not connected",
+      });
     }
 
-    const BOT_TOKEN = connection.accessToken;
+    // ✅ Decrypt stored token
+    const BOT_TOKEN = decrypt(connection.accessToken);
 
-    // 3. Send message to Telegram
+    // Send Telegram message
     try {
       await axios.post(
         `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
@@ -60,40 +75,69 @@ export const sendMessage = async (req: Request, res: Response) => {
       });
     }
 
-    // 4. Save message in DB
+    // Save message
     const newMessage = await prisma.message.create({
       data: {
-        conversationId,
+        conversationId: conversation.id,
         sender: "SELLER",
         direction: "OUTBOUND",
         text,
       },
     });
 
-    // 5. Update conversation
-    await prisma.conversation.update({
-      where: { id: conversationId },
-      data: {
-        lastMessage: text,
-        lastMessageAt: new Date(),
-      },
-    });
+    // Update conversation
+    const updatedConversation =
+      await prisma.conversation.update({
+        where: {
+          id: conversation.id,
+        },
+        data: {
+          lastMessage: text,
+          lastMessageAt: new Date(),
+        },
+      });
 
-    // 🔥🔥 REAL-TIME EMIT (IMPORTANT)
     const io = req.app.get("io");
 
-    io.to(`room_${conversationId}`).emit("new_message", {
-      id: newMessage.id,
-      conversationId,
-      text,
-      sender: "SELLER",
-      createdAt: newMessage.createdAt,
+    // Chat window update
+    io.to(`room_${conversation.id}`).emit(
+      "new_message",
+      {
+        id: newMessage.id,
+        conversationId: conversation.id,
+        text,
+        sender: "SELLER",
+        createdAt: newMessage.createdAt,
+      }
+    );
+
+    // Sidebar update
+    io.emit("conversation_updated", {
+      id: updatedConversation.id,
+      customerName:
+        updatedConversation.customerName,
+      lastMessage:
+        updatedConversation.lastMessage,
+      lastMessageAt:
+        updatedConversation.lastMessageAt,
+      unreadCount:
+        updatedConversation.unreadCount,
+      platform:
+        updatedConversation.platform,
     });
 
-    return res.json({ success: true });
-
+    return res.json({
+      success: true,
+      message: newMessage,
+    });
   } catch (err) {
-    console.error("Send message error:", err);
-    return res.status(500).json({ message: "Internal server error" });
+    console.error(
+      "Send message error:",
+      err
+    );
+
+    return res.status(500).json({
+      message: "Internal server error",
+    });
   }
 };

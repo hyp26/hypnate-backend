@@ -1,26 +1,37 @@
 import { Request, Response } from "express";
 import prisma from "../../../prisma/client";
+import { decrypt } from "../../../services/crypto.service";
 import axios from "axios";
 
-export const telegramWebhook = async (req: Request, res: Response) => {
+export const telegramWebhook = async (
+  req: Request,
+  res: Response
+) => {
   try {
-    const message = req.body.message;
+    const message = req.body?.message;
 
-    if (!message) return res.sendStatus(200);
-
-    const chatId = message.chat.id.toString();
-    const text = message.text || "";
-    const name = message.from?.first_name || "User";
+    if (!message) {
+      return res.sendStatus(200);
+    }
 
     const sellerId = Number(req.params.sellerId);
 
-    // ❗ Validate sellerId
-    if (!sellerId) {
+    // ✅ Validate sellerId
+    if (Number.isNaN(sellerId) || sellerId <= 0) {
       console.error("Invalid sellerId");
       return res.sendStatus(200);
     }
 
-    // 🔥 Get seller's bot
+    const chatId = String(message.chat?.id);
+    const text = message.text || "";
+    const name = message.from?.first_name || "User";
+
+    // ✅ Ignore bot messages
+    if (message.from?.is_bot) {
+      return res.sendStatus(200);
+    }
+
+    // ✅ Get seller Telegram connection
     const connection = await prisma.channelConnection.findFirst({
       where: {
         sellerId,
@@ -29,14 +40,15 @@ export const telegramWebhook = async (req: Request, res: Response) => {
       },
     });
 
-    if (!connection || !connection.accessToken) {
+    if (!connection?.accessToken) {
       console.error("No active Telegram connection");
       return res.sendStatus(200);
     }
 
-    const BOT_TOKEN = connection.accessToken;
+    // ✅ Decrypt stored token
+    const BOT_TOKEN = decrypt(connection.accessToken);
 
-    // 🔥 Safe auto-reply (optional)
+    // Optional auto-reply
     try {
       await axios.post(
         `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
@@ -52,7 +64,7 @@ export const telegramWebhook = async (req: Request, res: Response) => {
       );
     }
 
-    // 1. FIND OR CREATE CONVERSATION
+    // ✅ Find existing conversation
     let conversation = await prisma.conversation.findFirst({
       where: {
         sellerId,
@@ -61,6 +73,7 @@ export const telegramWebhook = async (req: Request, res: Response) => {
       },
     });
 
+    // ✅ Create conversation if not exists
     if (!conversation) {
       conversation = await prisma.conversation.create({
         data: {
@@ -68,11 +81,13 @@ export const telegramWebhook = async (req: Request, res: Response) => {
           platform: "TELEGRAM",
           externalUserId: chatId,
           customerName: name,
+          lastMessage: text,
+          lastMessageAt: new Date(),
         },
       });
     }
 
-    // 2. SAVE MESSAGE
+    // ✅ Save message
     const newMessage = await prisma.message.create({
       data: {
         conversationId: conversation.id,
@@ -82,19 +97,24 @@ export const telegramWebhook = async (req: Request, res: Response) => {
       },
     });
 
-    // 3. UPDATE CONVERSATION
-    await prisma.conversation.update({
-      where: { id: conversation.id },
+    // ✅ Update conversation
+    const updatedConversation = await prisma.conversation.update({
+      where: {
+        id: conversation.id,
+      },
       data: {
         lastMessage: text,
         lastMessageAt: new Date(),
-        unreadCount: { increment: 1 },
+        unreadCount: {
+          increment: 1,
+        },
       },
     });
 
-    // 🔥🔥 REAL-TIME EMIT (IMPORTANT)
+    // ✅ Socket emit
     const io = req.app.get("io");
 
+    // Chat window update
     io.to(`room_${conversation.id}`).emit("new_message", {
       id: newMessage.id,
       conversationId: conversation.id,
@@ -103,9 +123,19 @@ export const telegramWebhook = async (req: Request, res: Response) => {
       createdAt: newMessage.createdAt,
     });
 
+    // Sidebar conversation list update
+    io.emit("conversation_updated", {
+      id: updatedConversation.id,
+      customerName: updatedConversation.customerName,
+      lastMessage: updatedConversation.lastMessage,
+      lastMessageAt: updatedConversation.lastMessageAt,
+      unreadCount: updatedConversation.unreadCount,
+      platform: updatedConversation.platform,
+    });
+
     return res.sendStatus(200);
   } catch (err) {
-    console.error("Webhook error:", err);
+    console.error("Telegram webhook error:", err);
     return res.sendStatus(500);
   }
 };
