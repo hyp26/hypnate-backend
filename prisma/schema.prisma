@@ -91,6 +91,9 @@ model User {
   seller   Seller? @relation(fields: [sellerId], references: [id])
 
   passwordResets PasswordReset[]
+
+  assignedConversations Conversation[] @relation("ConversationAssignee")
+
   createdAt DateTime @default(now())
 }
 
@@ -109,7 +112,7 @@ model PasswordReset {
 // ───────────────────────────────────────────── 
 
 model Seller {
-  id           Int      @id @default(autoincrement())
+  id           Int     @id @default(autoincrement())
   businessName String
   gstNumber    String?
   phone        String?
@@ -140,17 +143,17 @@ model Seller {
 // ───────────────────────────────────────────── 
 
 model ChannelConnection {
-  id        Int      @id @default(autoincrement())
-  sellerId  Int
-  seller    Seller   @relation(fields: [sellerId], references: [id])
+  id       Int    @id @default(autoincrement())
+  sellerId Int
+  seller   Seller @relation(fields: [sellerId], references: [id])
 
-  platform  Platform
+  platform Platform
 
   accessToken       String?
   refreshToken      String?
   externalAccountId String?
 
-  isActive Boolean @default(true)
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 
   @@index([sellerId])
@@ -162,15 +165,16 @@ model ChannelConnection {
 // ───────────────────────────────────────────── 
 
 model Conversation {
-  id           Int      @id @default(autoincrement())
-  sellerId     Int
-  seller       Seller   @relation(fields: [sellerId], references: [id])
+  id Int @id @default(autoincrement())
 
-  platform     Platform
-  status       ConversationStatus @default(OPEN)
+  sellerId Int
+  seller   Seller @relation(fields: [sellerId], references: [id])
 
-  customerId   Int?
-  customer     Customer? @relation(fields: [customerId], references: [id])
+  platform Platform
+  status   ConversationStatus @default(OPEN)
+
+  customerId Int?
+  customer   Customer? @relation(fields: [customerId], references: [id])
 
   customerName  String
   customerPhone String?
@@ -179,9 +183,16 @@ model Conversation {
   externalUserId   String
   externalThreadId String?
 
-  unreadCount  Int @default(0)
-  lastMessage  String?
+  unreadCount Int @default(0)
+
+  lastMessage   String?
   lastMessageAt DateTime?
+
+  assignedToId Int?
+  assignedTo   User? @relation("ConversationAssignee", fields: [assignedToId], references: [id])
+
+  labelId Int?
+  label   Label? @relation(fields: [labelId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -192,6 +203,19 @@ model Conversation {
   @@index([sellerId])
   @@index([platform])
   @@index([status])
+  @@index([assignedToId])
+  @@index([labelId])
+}
+
+// ─────────────────────────────────────────────
+// Label
+// ─────────────────────────────────────────────
+
+model Label {
+  id   Int    @id @default(autoincrement())
+  name String @unique
+
+  conversations Conversation[]
 }
 
 // ─────────────────────────────────────────────
@@ -199,24 +223,26 @@ model Conversation {
 // ───────────────────────────────────────────── 
 
 model Message {
-  id             Int @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
   conversationId Int
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
-  sender     MessageSender
-  direction  MessageDirection
-  status     MessageStatus @default(SENT)
+  sender    MessageSender
+  direction MessageDirection
+  status    MessageStatus    @default(SENT)
 
-  text       String @db.Text
-  type       String @default("text")
+  text String @db.Text
+  type String @default("text")
 
-  mediaUrl   String?
-  metadata   Json?
+  mediaUrl String?
+  metadata Json?
 
-  isRead     Boolean @default(false)
+  isRead Boolean @default(false)
 
-  createdAt  DateTime @default(now())
+  isInternal Boolean @default(false)
+
+  createdAt DateTime @default(now())
 
   @@index([conversationId])
   @@index([conversationId, createdAt])
@@ -227,13 +253,13 @@ model Message {
 // ───────────────────────────────────────────── 
 
 model Customer {
-  id       Int     @id @default(autoincrement())
+  id       Int    @id @default(autoincrement())
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id])
 
-  name     String
-  email    String?
-  phone    String?
+  name  String
+  email String?
+  phone String?
 
   totalOrders Int   @default(0)
   totalSpent  Float @default(0)
@@ -243,7 +269,7 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  orders Order[]
+  orders        Order[]
   conversations Conversation[]
 
   @@unique([sellerId, email])
@@ -268,8 +294,8 @@ model Order {
   tax         Float? @default(0)
   totalAmount Float
 
-  status        String @default("PENDING")
-  paymentStatus String @default("UNPAID")
+  status        String  @default("PENDING")
+  paymentStatus String  @default("UNPAID")
   paymentMethod String?
 
   trackingNumber String?
@@ -285,7 +311,7 @@ model Order {
 }
 
 model Product {
-  id          Int @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id])
@@ -297,7 +323,7 @@ model Product {
   price Float
   mrp   Float?
 
-  stock Int @default(0)
+  stock Int      @default(0)
   sizes String[]
 
   imageUrl String?
@@ -339,7 +365,7 @@ model Upload {
 // ───────────────────────────────────────────── 
 
 model Notification {
-  id       Int @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
@@ -376,7 +402,7 @@ model Theme {
   layout      String
 
   tags   String[]
-  active Boolean @default(true)
+  active Boolean  @default(true)
 
   stores Store[]
 }
@@ -388,7 +414,7 @@ model Store {
   seller   Seller @relation(fields: [sellerId], references: [id])
 
   themeId String
-  theme   Theme @relation(fields: [themeId], references: [id])
+  theme   Theme  @relation(fields: [themeId], references: [id])
 
   storeName String
   slug      String @unique
