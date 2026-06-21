@@ -113,17 +113,8 @@ export const sendMessage = async (
 
     // Sidebar update
     io.emit("conversation_updated", {
-      id: updatedConversation.id,
-      customerName:
-        updatedConversation.customerName,
-      lastMessage:
-        updatedConversation.lastMessage,
-      lastMessageAt:
-        updatedConversation.lastMessageAt,
-      unreadCount:
-        updatedConversation.unreadCount,
-      platform:
-        updatedConversation.platform,
+      conversationId: updatedConversation.id,
+      conversation: updatedConversation,
     });
 
     return res.json({

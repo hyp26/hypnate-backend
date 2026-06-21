@@ -125,12 +125,8 @@ export const telegramWebhook = async (
 
     // Sidebar conversation list update
     io.emit("conversation_updated", {
-      id: updatedConversation.id,
-      customerName: updatedConversation.customerName,
-      lastMessage: updatedConversation.lastMessage,
-      lastMessageAt: updatedConversation.lastMessageAt,
-      unreadCount: updatedConversation.unreadCount,
-      platform: updatedConversation.platform,
+      conversationId: updatedConversation.id,
+      conversation: updatedConversation,
     });
 
     return res.sendStatus(200);

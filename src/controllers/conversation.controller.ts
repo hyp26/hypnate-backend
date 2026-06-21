@@ -5,10 +5,16 @@ import { getSellerId } from "../services/seller.service";
 // ─────────────────────────────────────────────
 // GET STATS
 // ─────────────────────────────────────────────
-export const getConversationStats = async (req: Request, res: Response, next: NextFunction) => {
+export const getConversationStats = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
   try {
     const sellerId = await getSellerId(req);
-    if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
+    if (!sellerId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
     const [total, open, pending, resolved, unreadAgg] = await Promise.all([
       prisma.conversation.count({ where: { sellerId } }),
@@ -36,31 +42,58 @@ export const getConversationStats = async (req: Request, res: Response, next: Ne
 // ─────────────────────────────────────────────
 // GET CONVERSATIONS
 // ─────────────────────────────────────────────
-export const getConversations = async (req: Request, res: Response, next: NextFunction) => {
+export const getConversations = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
   try {
     const sellerId = await getSellerId(req);
-    if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
+    if (!sellerId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
     const platform = req.query.platform as string | undefined;
     const status = req.query.status as string | undefined;
-    const search = typeof req.query.search === "string" ? req.query.search : "";
+    const search =
+      typeof req.query.search === "string" ? req.query.search : "";
 
     const conversations = await prisma.conversation.findMany({
       where: {
         sellerId,
-        ...(platform && platform !== "all" && {
-          platform: platform.toUpperCase() as any,
+        ...(platform &&
+          platform !== "all" && {
+            platform: platform.toUpperCase() as any,
+          }),
+        ...(status && {
+          status: status.toUpperCase() as any,
         }),
-        ...(status && { status: status.toUpperCase() as any }),
         ...(search && {
           OR: [
-            { customerName: { contains: search, mode: "insensitive" } },
-            { lastMessage: { contains: search, mode: "insensitive" } },
-            { customerPhone: { contains: search, mode: "insensitive" } },
+            {
+              customerName: {
+                contains: search,
+                mode: "insensitive",
+              },
+            },
+            {
+              lastMessage: {
+                contains: search,
+                mode: "insensitive",
+              },
+            },
+            {
+              customerPhone: {
+                contains: search,
+                mode: "insensitive",
+              },
+            },
           ],
         }),
       },
-      orderBy: { lastMessageAt: "desc" },
+      orderBy: {
+        lastMessageAt: "desc",
+      },
     });
 
     res.json(conversations);
@@ -69,6 +102,9 @@ export const getConversations = async (req: Request, res: Response, next: NextFu
   }
 };
 
+// ─────────────────────────────────────────────
+// GET CONVERSATION BY ID
+// ─────────────────────────────────────────────
 export const getConversationById = async (
   req: Request,
   res: Response,
@@ -76,16 +112,26 @@ export const getConversationById = async (
 ) => {
   try {
     const sellerId = await getSellerId(req);
-    if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
+
+    if (!sellerId) {
+      return res.status(401).json({
+        message: "Unauthorized",
+      });
+    }
 
     const id = Number(req.params.id);
 
     const conversation = await prisma.conversation.findFirst({
-      where: { id, sellerId },
+      where: {
+        id,
+        sellerId,
+      },
     });
 
     if (!conversation) {
-      return res.status(404).json({ message: "Conversation not found" });
+      return res.status(404).json({
+        message: "Conversation not found",
+      });
     }
 
     res.json(conversation);
@@ -94,6 +140,9 @@ export const getConversationById = async (
   }
 };
 
+// ─────────────────────────────────────────────
+// UPDATE STATUS
+// ─────────────────────────────────────────────
 export const updateConversationStatus = async (
   req: Request,
   res: Response,
@@ -101,32 +150,46 @@ export const updateConversationStatus = async (
 ) => {
   try {
     const sellerId = await getSellerId(req);
-    if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
+
+    if (!sellerId) {
+      return res.status(401).json({
+        message: "Unauthorized",
+      });
+    }
 
     const id = Number(req.params.id);
     const { status } = req.body;
 
     if (!["OPEN", "RESOLVED", "PENDING"].includes(status)) {
-      return res.status(400).json({ message: "Invalid status" });
+      return res.status(400).json({
+        message: "Invalid status",
+      });
     }
 
     const existing = await prisma.conversation.findFirst({
-    where: {
-      id,
-      sellerId,
-    },
-  });
-
-  if (!existing) {
-    return res.status(404).json({
-      message: "Conversation not found",
+      where: {
+        id,
+        sellerId,
+      },
     });
-  }
 
-  const updated = await prisma.conversation.update({
-    where: { id },
-    data: { status },
-  });
+    if (!existing) {
+      return res.status(404).json({
+        message: "Conversation not found",
+      });
+    }
+
+    const updated = await prisma.conversation.update({
+      where: { id },
+      data: { status },
+    });
+
+    const io = req.app.get("io");
+
+    io.emit("conversation_updated", {
+      conversationId: updated.id,
+      conversation: updated,
+    });
 
     res.json(updated);
   } catch (err) {
@@ -137,28 +200,59 @@ export const updateConversationStatus = async (
 // ─────────────────────────────────────────────
 // GET MESSAGES
 // ─────────────────────────────────────────────
-export const getMessages = async (req: Request, res: Response, next: NextFunction) => {
+export const getMessages = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
   try {
     const sellerId = await getSellerId(req);
-    if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
+
+    if (!sellerId) {
+      return res.status(401).json({
+        message: "Unauthorized",
+      });
+    }
 
     const id = Number(req.params.id);
 
     const messages = await prisma.message.findMany({
-      where: { conversationId: id },
-      orderBy: { createdAt: "asc" },
+      where: {
+        conversationId: id,
+      },
+      orderBy: {
+        createdAt: "asc",
+      },
     });
 
-    await prisma.$transaction([
+    const [, updatedConversation] = await prisma.$transaction([
       prisma.message.updateMany({
-        where: { conversationId: id, sender: "CUSTOMER", isRead: false },
-        data: { isRead: true },
+        where: {
+          conversationId: id,
+          sender: "CUSTOMER",
+          isRead: false,
+        },
+        data: {
+          isRead: true,
+        },
       }),
+
       prisma.conversation.update({
-        where: { id },
-        data: { unreadCount: 0 },
+        where: {
+          id,
+        },
+        data: {
+          unreadCount: 0,
+        },
       }),
     ]);
+
+    const io = req.app.get("io");
+
+    io.emit("conversation_updated", {
+      conversationId: updatedConversation.id,
+      conversation: updatedConversation,
+    });
 
     res.json(messages);
   } catch (err) {
@@ -169,20 +263,34 @@ export const getMessages = async (req: Request, res: Response, next: NextFunctio
 // ─────────────────────────────────────────────
 // SEND MESSAGE
 // ─────────────────────────────────────────────
-export const sendMessage = async (req: Request, res: Response, next: NextFunction) => {
+export const sendMessage = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
   try {
     const sellerId = await getSellerId(req);
-    if (!sellerId) return res.status(401).json({ message: "Unauthorized" });
+
+    if (!sellerId) {
+      return res.status(401).json({
+        message: "Unauthorized",
+      });
+    }
 
     const id = Number(req.params.id);
 
-    const { text, type = "text", mediaUrl, metadata } = req.body;
+    const {
+      text,
+      type = "text",
+      mediaUrl,
+      metadata,
+    } = req.body;
 
     const message = await prisma.message.create({
       data: {
         conversationId: id,
         sender: "SELLER",
-        direction: "OUTBOUND", // ✅ FIXED
+        direction: "OUTBOUND",
         text: text.trim(),
         type,
         mediaUrl: mediaUrl ?? null,
@@ -191,13 +299,22 @@ export const sendMessage = async (req: Request, res: Response, next: NextFunctio
       },
     });
 
-    await prisma.conversation.update({
+    const updatedConversation = await prisma.conversation.update({
       where: { id },
       data: {
         lastMessage: text.trim(),
         lastMessageAt: new Date(),
       },
     });
+
+    const io = req.app.get("io");
+
+    io.emit("conversation_updated", {
+      conversationId: updatedConversation.id,
+      conversation: updatedConversation,
+    });
+
+    io.to(`room_${id}`).emit("new_message", message);
 
     res.json(message);
   } catch (err) {
