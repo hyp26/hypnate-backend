@@ -1,10 +1,36 @@
 import axios from "axios";
+import prisma from "../../prisma/client";
+import { decrypt } from "../crypto.service";
+
+const getBotToken = async (
+  sellerId: number
+): Promise<string> => {
+  const connection =
+    await prisma.channelConnection.findFirst({
+      where: {
+        sellerId,
+        platform: "TELEGRAM",
+        isActive: true,
+      },
+    });
+
+  if (!connection?.accessToken) {
+    throw new Error(
+      "No active Telegram connection found"
+    );
+  }
+
+  return decrypt(connection.accessToken);
+};
 
 export const sendTelegramMessage = async (
-  botToken: string,
+  sellerId: number,
   chatId: string,
   text: string
 ) => {
+  const botToken =
+    await getBotToken(sellerId);
+
   const response = await axios.post(
     `https://api.telegram.org/bot${botToken}/sendMessage`,
     {
@@ -17,9 +43,12 @@ export const sendTelegramMessage = async (
 };
 
 export const setTelegramWebhook = async (
-  botToken: string,
+  sellerId: number,
   webhookUrl: string
 ) => {
+  const botToken =
+    await getBotToken(sellerId);
+
   const response = await axios.post(
     `https://api.telegram.org/bot${botToken}/setWebhook`,
     {
@@ -31,8 +60,11 @@ export const setTelegramWebhook = async (
 };
 
 export const getTelegramBotInfo = async (
-  botToken: string
+  sellerId: number
 ) => {
+  const botToken =
+    await getBotToken(sellerId);
+
   const response = await axios.get(
     `https://api.telegram.org/bot${botToken}/getMe`
   );

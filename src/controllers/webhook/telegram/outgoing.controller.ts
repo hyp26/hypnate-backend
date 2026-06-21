@@ -1,7 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../../../prisma/client";
-import axios from "axios";
-import { decrypt } from "../../../services/crypto.service";
+import { sendTelegramMessage } from "../../../services/messaging/telegram.service";
 
 export const sendMessage = async (
   req: Request,
@@ -16,12 +15,12 @@ export const sendMessage = async (
       });
     }
 
-    // Get conversation
-    const conversation = await prisma.conversation.findUnique({
-      where: {
-        id: Number(conversationId),
-      },
-    });
+    const conversation =
+      await prisma.conversation.findUnique({
+        where: {
+          id: Number(conversationId),
+        },
+      });
 
     if (!conversation) {
       return res.status(404).json({
@@ -29,63 +28,22 @@ export const sendMessage = async (
       });
     }
 
-    const chatId = conversation.externalUserId;
+    await sendTelegramMessage(
+      conversation.sellerId,
+      conversation.externalUserId,
+      text
+    );
 
-    if (!chatId) {
-      return res.status(400).json({
-        message: "Invalid chatId",
-      });
-    }
-
-    // Get Telegram connection
-    const connection = await prisma.channelConnection.findFirst({
-      where: {
-        sellerId: conversation.sellerId,
-        platform: "TELEGRAM",
-        isActive: true,
-      },
-    });
-
-    if (!connection?.accessToken) {
-      return res.status(400).json({
-        message: "Telegram not connected",
-      });
-    }
-
-    // ✅ Decrypt stored token
-    const BOT_TOKEN = decrypt(connection.accessToken);
-
-    // Send Telegram message
-    try {
-      await axios.post(
-        `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
-        {
-          chat_id: chatId,
+    const newMessage =
+      await prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          sender: "SELLER",
+          direction: "OUTBOUND",
           text,
-        }
-      );
-    } catch (err: any) {
-      console.error(
-        "Telegram send failed:",
-        err?.response?.data || err.message
-      );
-
-      return res.status(500).json({
-        message: "Failed to send message to Telegram",
+        },
       });
-    }
 
-    // Save message
-    const newMessage = await prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        sender: "SELLER",
-        direction: "OUTBOUND",
-        text,
-      },
-    });
-
-    // Update conversation
     const updatedConversation =
       await prisma.conversation.update({
         where: {
@@ -99,7 +57,6 @@ export const sendMessage = async (
 
     const io = req.app.get("io");
 
-    // Chat window update
     io.to(`room_${conversation.id}`).emit(
       "new_message",
       {
@@ -111,7 +68,6 @@ export const sendMessage = async (
       }
     );
 
-    // Sidebar update
     io.emit("conversation_updated", {
       conversationId: updatedConversation.id,
       conversation: updatedConversation,
@@ -128,7 +84,7 @@ export const sendMessage = async (
     );
 
     return res.status(500).json({
-      message: "Internal server error",
+      message: "Failed to send message",
     });
   }
 };
