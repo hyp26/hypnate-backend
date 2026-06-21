@@ -1,10 +1,12 @@
 import { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
+import { ENV } from "../config/env";
 
-const JWT_SECRET = process.env.JWT_SECRET as string;
-const REFRESH_SECRET = process.env.REFRESH_SECRET as string;
-const IS_PROD = process.env.NODE_ENV === "production";
+const JWT_SECRET = ENV.JWT_SECRET;
 
+/* ----------------------------------------------------
+   TYPES
+---------------------------------------------------- */
 export interface JwtUser {
   id: number;
   role: "ADMIN" | "SELLER";
@@ -24,39 +26,46 @@ export const verifyToken: RequestHandler = (req, res, next) => {
   const token = authReq.cookies?.accessToken;
 
   if (!token) {
-    return res.status(401).json({ message: "Not authenticated" });
+    return res.status(401).json({
+      message: "Not authenticated",
+    });
   }
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as JwtUser;
+
     authReq.user = decoded;
+
     return next();
   } catch (err) {
     if (err instanceof jwt.TokenExpiredError) {
-      // Tell the frontend to refresh — it should call POST /api/auth/refresh
-      // then retry the original request
       return res.status(401).json({
         message: "Token expired",
         code: "TOKEN_EXPIRED",
       });
     }
 
-    return res.status(401).json({ message: "Invalid token" });
+    return res.status(401).json({
+      message: "Invalid token",
+    });
   }
 };
 
 /* ----------------------------------------------------
    REQUIRE ROLE
-   Usage: router.get("/admin", verifyToken, requireRole("ADMIN"), handler)
 ---------------------------------------------------- */
 export const requireRole = (...roles: Array<"ADMIN" | "SELLER">) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
-      return res.status(401).json({ message: "Not authenticated" });
+      return res.status(401).json({
+        message: "Not authenticated",
+      });
     }
 
     if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ message: "Forbidden: insufficient permissions" });
+      return res.status(403).json({
+        message: "Forbidden: insufficient permissions",
+      });
     }
 
     return next();
@@ -65,9 +74,6 @@ export const requireRole = (...roles: Array<"ADMIN" | "SELLER">) => {
 
 /* ----------------------------------------------------
    OPTIONAL AUTH
-   Use on routes that work for both guests and logged-in users.
-   Does NOT return 401 if no token — just sets req.user if valid.
-   Usage: router.get("/feed", optionalAuth, handler)
 ---------------------------------------------------- */
 export const optionalAuth = (
   req: AuthRequest,
@@ -76,23 +82,22 @@ export const optionalAuth = (
 ) => {
   const token = req.cookies?.accessToken;
 
-  if (!token) return next();
+  if (!token) {
+    return next();
+  }
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as JwtUser;
     req.user = decoded;
   } catch {
-    // Token invalid or expired — continue as guest
+    // Continue as guest
   }
 
   return next();
 };
 
 /* ----------------------------------------------------
-   SELLER ONLY GUARD
-   Ensures the resource sellerId matches the logged-in seller.
-   Prevents sellers from accessing other sellers' data.
-   Usage: add sellerGuard after verifyToken on seller routes
+   SELLER GUARD
 ---------------------------------------------------- */
 export const sellerGuard = (
   req: AuthRequest,
@@ -100,20 +105,34 @@ export const sellerGuard = (
   next: NextFunction
 ) => {
   if (!req.user) {
-    return res.status(401).json({ message: "Not authenticated" });
+    return res.status(401).json({
+      message: "Not authenticated",
+    });
   }
 
-  // ADMINs can access any seller's data
-  if (req.user.role === "ADMIN") return next();
+  // Admins bypass seller checks
+  if (req.user.role === "ADMIN") {
+    return next();
+  }
 
-  // For SELLERs, sellerId in token must match sellerId in request
-  const requestedSellerId =
-    parseInt(req.params.sellerId) ||
-    parseInt(req.body.sellerId) ||
-    parseInt(req.query.sellerId as string);
+  let requestedSellerId: number | undefined;
 
-  if (requestedSellerId && req.user.sellerId !== requestedSellerId) {
-    return res.status(403).json({ message: "Forbidden: not your resource" });
+  if (req.params?.sellerId) {
+    requestedSellerId = Number(req.params.sellerId);
+  } else if (req.body?.sellerId) {
+    requestedSellerId = Number(req.body.sellerId);
+  } else if (req.query?.sellerId) {
+    requestedSellerId = Number(req.query.sellerId);
+  }
+
+  if (
+    requestedSellerId !== undefined &&
+    !Number.isNaN(requestedSellerId) &&
+    req.user.sellerId !== requestedSellerId
+  ) {
+    return res.status(403).json({
+      message: "Forbidden: not your resource",
+    });
   }
 
   return next();

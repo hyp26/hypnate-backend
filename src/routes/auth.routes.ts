@@ -19,7 +19,7 @@ const router = Router();
 router.post("/register", register as RequestHandler);
 router.post("/login", login as RequestHandler);
 router.post("/forgot-password", forgotPassword as RequestHandler);
-router.post("/reset-password/:token", resetPassword);
+router.post("/reset-password/:token", resetPassword as RequestHandler );
 
 // Refresh access token using httpOnly refresh cookie
 // Frontend calls this when it gets 401 + code: "TOKEN_EXPIRED"

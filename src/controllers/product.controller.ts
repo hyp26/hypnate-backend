@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
+import { productSchema } from "../utils/validation";
 import { AuthRequest } from "../middleware/authMiddleware";
 import { createNotification } from "../services/notification.service";
 
@@ -27,11 +28,16 @@ export const createProduct = async (
       return res.status(400).json({ message: "Seller account not found" });
     }
 
-    const { name, description, category, price, stock, imageUrl } = req.body;
+    const validatedData = productSchema.parse(req.body);
 
-    if (!name || price === undefined) {
-      return res.status(400).json({ message: "Invalid product data" });
-    }
+    const {
+      name,
+      description,
+      category,
+      price,
+      stock,
+      imageUrl,
+    } = validatedData;
 
     const product = await prisma.product.create({
       data: {
@@ -159,9 +165,11 @@ export const updateProduct = async (
       return res.status(400).json({ message: "Invalid product ID" });
     }
 
+    const validatedData = productSchema.partial().parse(req.body);
+
     const updated = await prisma.product.updateMany({
       where: { id, sellerId: authReq.user.sellerId },
-      data: req.body,
+      data: validatedData,
     });
 
     if (updated.count === 0) {

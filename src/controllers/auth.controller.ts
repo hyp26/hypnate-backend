@@ -6,6 +6,7 @@ import { Resend } from "resend";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
 import { JWT_SECRET, jwtOptions, SALT_ROUNDS } from "../utils/jwtConfig";
+import { validatePassword } from "../utils/password";
 
 /* ----------------------------------------------------
    CONSTANTS
@@ -55,9 +56,6 @@ const clearAuthCookies = (res: Response) => {
 
 const validateEmail = (email: string) =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-
-const validatePassword = (password: string) =>
-  /^(?=.*[A-Z])(?=.*[0-9])(?=.*[!@#$%^&*]).{8,}$/.test(password);
 
 /* ----------------------------------------------------
    REGISTER

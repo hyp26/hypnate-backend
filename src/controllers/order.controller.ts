@@ -4,6 +4,8 @@ import { AuthRequest } from "../middleware/authMiddleware";
 import { createNotification } from "../services/notification.service";
 import { getSellerId } from "../services/seller.service";
 
+const LOW_STOCK_THRESHOLD = 10;
+
 /**
  * CREATE ORDER
  */
@@ -37,45 +39,34 @@ export const createOrder = async (
       return res.status(400).json({ message: "Invalid order payload" });
     }
 
-    /**
-     * Find or create customer
-     */
-    let customer;
-
-    if (customerEmail) {
-      customer = await prisma.customer.findUnique({
-        where: {
-          sellerId_email: {
-            sellerId,
-            email: customerEmail,
-          },
-        },
-      });
-    }
-
-    if (!customer) {
-      customer = await prisma.customer.create({
-        data: {
-          sellerId,
-          name: customerName,
-          email: customerEmail ?? null,
-          phone: customerPhone ?? null,
-        },
-      });
-    } else {
-      await prisma.customer.update({
-        where: { id: customer.id },
-        data: {
-          name: customerName,
-          phone: customerPhone ?? customer.phone,
-        },
-      });
+    if (Number(tax) < 0) {
+      return res.status(400).json({ message: "Tax cannot be negative" });
     }
 
     /**
-     * Calculate totals
+     * Merge duplicate line items so the same productId appearing more than
+     * once in the payload is validated and decremented as a single combined
+     * quantity, not as separate smaller (individually valid) quantities.
      */
-    const productIds = products.map((p: any) => p.productId);
+    const productQuantityMap = new Map<number, number>();
+    for (const item of products) {
+      const productId = Number(item.productId);
+
+      if (!Number.isInteger(productId) || productId <= 0) {
+        return res.status(400).json({ message: "Invalid product ID" });
+      }
+
+      const current = productQuantityMap.get(productId) || 0;
+      productQuantityMap.set(
+        productId,
+        current + Number(item.quantity || 1)
+      );
+    }
+
+    /**
+     * Validate products exist and belong to this seller
+     */
+    const productIds = [...productQuantityMap.keys()];
 
     const dbProducts = await prisma.product.findMany({
       where: {
@@ -88,11 +79,30 @@ export const createOrder = async (
       return res.status(400).json({ message: "Invalid product(s)" });
     }
 
+    for (const [productId, totalQuantity] of productQuantityMap) {
+      const product = dbProducts.find((p) => p.id === productId);
+
+      if (!product) continue;
+
+      if (totalQuantity <= 0) {
+        return res.status(400).json({
+          message: "Quantity must be greater than 0",
+        });
+      }
+
+      if (product.stock < totalQuantity) {
+        return res.status(400).json({
+          message: `${product.name} has only ${product.stock} units available`,
+        });
+      }
+    }
+
     let subtotal = 0;
 
     const productCreates = products.map((p: any) => {
       const prod = dbProducts.find((x) => x.id === p.productId)!;
       const quantity = Number(p.quantity || 1);
+
       subtotal += prod.price * quantity;
 
       return {
@@ -104,64 +114,175 @@ export const createOrder = async (
 
     const totalAmount = subtotal + Number(tax);
 
-    /**
-     * Create order
-     */
-    const order = await prisma.order.create({
-      data: {
-        sellerId,
-        customerId: customer.id,
-        customerName,
-        customerPhone,
-        customerEmail,
-        shippingAddress,
-        subtotal,
-        tax,
-        totalAmount,
-        paymentMethod: paymentMethod ?? null,
-        status: "PENDING",
-        paymentStatus: "UNPAID",
-        timeline: [
-          {
-            status: "PENDING",
-            timestamp: new Date().toISOString(),
-            note: "Order placed",
+    if (totalAmount <= 0) {
+      return res.status(400).json({
+        message: "Order total must be greater than 0",
+      });
+    }
+
+    // Collected inside the transaction, used for notifications after commit
+    const lowStockProducts: { id: number; name: string; stock: number }[] = [];
+
+    const order = await prisma.$transaction(async (tx) => {
+      let customer;
+
+      if (customerEmail) {
+        customer = await tx.customer.findUnique({
+          where: {
+            sellerId_email: {
+              sellerId,
+              email: customerEmail,
+            },
           },
-        ],
-        products: {
-          create: productCreates,
+        });
+      }
+
+      if (!customer) {
+        customer = await tx.customer.create({
+          data: {
+            sellerId,
+            name: customerName,
+            email: customerEmail ?? null,
+            phone: customerPhone ?? null,
+          },
+        });
+      } else {
+        customer = await tx.customer.update({
+          where: {
+            id: customer.id,
+          },
+          data: {
+            name: customerName,
+            phone: customerPhone ?? customer.phone,
+          },
+        });
+      }
+
+      const createdOrder = await tx.order.create({
+        data: {
+          sellerId,
+          customerId: customer.id,
+          customerName,
+          customerPhone,
+          customerEmail,
+          shippingAddress,
+          subtotal,
+          tax,
+          totalAmount,
+          paymentMethod: paymentMethod ?? null,
+          status: "PENDING",
+          paymentStatus: "UNPAID",
+          timeline: [
+            {
+              status: "PENDING",
+              timestamp: new Date().toISOString(),
+              note: "Order placed",
+            },
+          ],
+          products: {
+            create: productCreates,
+          },
         },
-      },
-      include: {
-        products: {
-          include: { product: true }, // ✅ FIXED HERE
+        include: {
+          products: {
+            include: {
+              product: true,
+            },
+          },
+          customer: true,
         },
-        customer: true,
-      },
+      });
+
+      // Decrement stock atomically for each distinct product. updateMany's
+      // `gte` guard means the decrement only applies if enough stock is
+      // still available at the moment of the write — this closes the
+      // race window between the earlier read-based validation and the
+      // actual write, preventing concurrent requests from overselling.
+      for (const [productId, quantity] of productQuantityMap) {
+        const before = dbProducts.find((p) => p.id === productId)!;
+
+        const result = await tx.product.updateMany({
+          where: {
+            id: productId,
+            stock: { gte: quantity },
+          },
+          data: {
+            stock: { decrement: quantity },
+          },
+        });
+
+        if (result.count === 0) {
+          throw new Error(`Insufficient stock for "${before.name}"`);
+        }
+
+        const updatedProduct = await tx.product.findUniqueOrThrow({
+          where: { id: productId },
+          select: { id: true, name: true, stock: true },
+        });
+
+        // Only notify the first time stock crosses below the threshold,
+        // not on every subsequent order that keeps it low — avoids
+        // spamming the seller with repeat low-stock alerts.
+        if (
+          updatedProduct.stock < LOW_STOCK_THRESHOLD &&
+          before.stock >= LOW_STOCK_THRESHOLD
+        ) {
+          lowStockProducts.push(updatedProduct);
+        }
+      }
+
+      await tx.customer.update({
+        where: {
+          id: customer.id,
+        },
+        data: {
+          totalOrders: {
+            increment: 1,
+          },
+          totalSpent: {
+            increment: totalAmount,
+          },
+          lastOrderAt: new Date(),
+        },
+      });
+
+      return createdOrder;
     });
 
-    await createNotification({
-      sellerId,
-      type: "ORDER_NEW",
-      title: `New Order #${order.id}`,
-      body: `${customerName} placed an order for ₹${totalAmount}`,
-      link: `/orders/${order.id}`,
-    });
+    // Fire notifications after the transaction has committed.
+    // Wrapped so a notification-service failure never surfaces as an order
+    // failure — the order is already committed at this point.
+    for (const product of lowStockProducts) {
+      try {
+        await createNotification({
+          sellerId,
+          type: "STOCK_LOW",
+          title: "Low Stock Alert",
+          body: `${product.name} has only ${product.stock} units left`,
+          link: `/products/${product.id}`,
+        });
+      } catch (notifyErr) {
+        console.error("Low stock notification failed:", notifyErr);
+      }
+    }
 
-    /**
-     * Update customer analytics
-     */
-    await prisma.customer.update({
-      where: { id: customer.id },
-      data: {
-        totalOrders: { increment: 1 },
-        totalSpent: { increment: totalAmount },
-        lastOrderAt: new Date(),
-      },
-    });
+    try {
+      await createNotification({
+        sellerId,
+        type: "ORDER_NEW",
+        title: `New Order #${order.id}`,
+        body: `${customerName} placed an order for ₹${totalAmount}`,
+        link: `/orders/${order.id}`,
+      });
+    } catch (notifyErr) {
+      console.error("New order notification failed:", notifyErr);
+    }
 
     res.status(201).json(order);
-  } catch (err) {
+  } catch (err: any) {
+    if (err instanceof Error && err.message.startsWith("Insufficient stock")) {
+      return res.status(409).json({ message: err.message });
+    }
     next(err);
   }
 };
@@ -184,7 +305,7 @@ export const getOrders = async (
       where: { sellerId },
       include: {
         products: {
-          include: { product: true }, // ✅ FIXED HERE
+          include: { product: true },
         },
         customer: true,
       },
@@ -220,7 +341,7 @@ export const getOrderById = async (
       where: { id, sellerId },
       include: {
         products: {
-          include: { product: true }, // ✅ FIXED HERE
+          include: { product: true },
         },
         customer: true,
       },
@@ -283,7 +404,7 @@ export const updateOrderStatus = async (
       },
       include: {
         products: {
-          include: { product: true }, // ✅ correct relation
+          include: { product: true },
         },
         customer: true,
       },
@@ -343,7 +464,7 @@ export const updatePaymentStatus = async (
       },
       include: {
         products: {
-          include: { product: true }, // ✅ correct relation
+          include: { product: true },
         },
         customer: true,
       },
@@ -403,7 +524,7 @@ export const addTracking = async (
       },
       include: {
         products: {
-          include: { product: true }, // ✅ correct relation
+          include: { product: true },
         },
         customer: true,
       },

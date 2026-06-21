@@ -1,39 +1,79 @@
-import multer from "multer";
+import multer, { FileFilterCallback } from "multer";
 import path from "path";
 import fs from "fs";
+import { Request } from "express";
 
 const uploadsDir = process.env.UPLOADS_DIR || "./uploads";
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
-// disk storage for local mode
+// Ensure upload directory exists
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+/* ---------------- STORAGE ---------------- */
+
+// Local disk storage
 const diskStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadsDir),
-  filename: (req, file, cb) => {
+  destination: (_req, _file, cb) => {
+    cb(null, uploadsDir);
+  },
+
+  filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname);
-    const name = `${Date.now()}-${Math.round(Math.random()*1e9)}${ext}`;
-    cb(null, name);
-  }
+    const filename = `${Date.now()}-${Math.round(
+      Math.random() * 1_000_000_000
+    )}${ext}`;
+
+    cb(null, filename);
+  },
 });
 
-// memory storage for cloud mode (we'll upload buffer to Cloudinary)
+// Cloud storage mode (buffer only)
 const memoryStorage = multer.memoryStorage();
 
-const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 5_242_880); // 5MB default
+/* ---------------- LIMITS ---------------- */
 
-// file filter (images only)
-function imageFileFilter(req: Express.Request, file: Express.Multer.File, cb: any) {
-  const allowed = ["image/jpeg", "image/png", "image/webp", "image/gif"];
-  if (!allowed.includes(file.mimetype)) {
-    return cb(new Error("Only image files (jpeg, png, webp, gif) are allowed"));
+export const MAX_FILE_SIZE =
+  Number(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024;
+
+/* ---------------- FILE FILTER ---------------- */
+
+const ALLOWED_MIME_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+];
+
+function imageFileFilter(
+  _req: Request,
+  file: Express.Multer.File,
+  cb: FileFilterCallback
+): void {
+  if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+    return cb(
+      new Error(
+        "Only image files (jpeg, png, webp, gif) are allowed"
+      )
+    );
   }
+
   cb(null, true);
 }
 
-// factory to pick storage mode
+/* ---------------- FACTORY ---------------- */
+
 export function getMulterForMode(mode: "local" | "cloud") {
   return multer({
     storage: mode === "local" ? diskStorage : memoryStorage,
-    limits: { fileSize: MAX_FILE_SIZE },
+    limits: {
+      fileSize: MAX_FILE_SIZE,
+    },
     fileFilter: imageFileFilter,
   });
 }
+
+/* ---------------- READY-TO-USE EXPORTS ---------------- */
+
+export const localUpload = getMulterForMode("local");
+export const cloudUpload = getMulterForMode("cloud");
