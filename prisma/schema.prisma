@@ -109,7 +109,7 @@ model PasswordReset {
 
 // ─────────────────────────────────────────────
 // SELLER
-// ───────────────────────────────────────────── 
+// ─────────────────────────────────────────────
 
 model Seller {
   id           Int     @id @default(autoincrement())
@@ -136,33 +136,47 @@ model Seller {
   conversations Conversation[]
   notifications Notification[]
   channels      ChannelConnection[]
+  quickReplies  QuickReply[] // FIX: added missing back-relation
 }
 
 // ─────────────────────────────────────────────
 // CHANNEL CONNECTIONS
-// ───────────────────────────────────────────── 
+// ─────────────────────────────────────────────
 
 model ChannelConnection {
-  id       Int    @id @default(autoincrement())
+  id Int @id @default(autoincrement())
+
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id])
 
   platform Platform
 
-  accessToken       String?
-  refreshToken      String?
+  name String?
+
+  accessToken  String?
+  refreshToken String?
+
   externalAccountId String?
 
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
+  // FIX: removed stray inline JSON literal that was placed after the field type
+  metadata Json?
 
+  webhookUrl    String?
+  webhookSecret String?
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sellerId, platform])
   @@index([sellerId])
   @@index([platform])
 }
 
 // ─────────────────────────────────────────────
 // CONVERSATION SYSTEM
-// ───────────────────────────────────────────── 
+// ─────────────────────────────────────────────
 
 model Conversation {
   id Int @id @default(autoincrement())
@@ -199,7 +213,7 @@ model Conversation {
 
   messages Message[]
 
-  @@unique([sellerId, platform, externalUserId])
+  @@unique([sellerId, platform, externalUserId, externalThreadId])
   @@index([sellerId])
   @@index([platform])
   @@index([status])
@@ -208,7 +222,7 @@ model Conversation {
 }
 
 // ─────────────────────────────────────────────
-// Label
+// LABEL
 // ─────────────────────────────────────────────
 
 model Label {
@@ -220,7 +234,7 @@ model Label {
 
 // ─────────────────────────────────────────────
 // MESSAGES
-// ───────────────────────────────────────────── 
+// ─────────────────────────────────────────────
 
 model Message {
   id Int @id @default(autoincrement())
@@ -236,10 +250,16 @@ model Message {
   type String @default("text")
 
   mediaUrl String?
-  metadata Json?
 
-  isRead Boolean @default(false)
+  externalMessageId String?
+  metadata          Json?
 
+  replyToMessageId Int?
+  replyToMessage   Message?  @relation("MessageReplies", fields: [replyToMessageId], references: [id])
+  replies          Message[] @relation("MessageReplies")
+
+  // FIX: these four fields were accidentally placed outside the model block
+  isRead     Boolean @default(false)
   isInternal Boolean @default(false)
 
   createdAt DateTime @default(now())
@@ -249,8 +269,50 @@ model Message {
 }
 
 // ─────────────────────────────────────────────
+// QUICK REPLY
+// ─────────────────────────────────────────────
+
+model QuickReply {
+  id Int @id @default(autoincrement())
+
+  sellerId Int
+  // FIX: relation args were split with misplaced parentheses
+  seller   Seller @relation(fields: [sellerId], references: [id])
+
+  title   String
+  content String @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([sellerId])
+}
+
+// ─────────────────────────────────────────────
+// WEBHOOK
+// ─────────────────────────────────────────────
+
+model WebhookEvent {
+  id Int @id @default(autoincrement())
+
+  platform Platform
+
+  sellerId Int?
+
+  eventType String
+
+  payload Json
+
+  processed Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([platform])
+  @@index([processed])
+}
+
+// ─────────────────────────────────────────────
 // COMMERCE
-// ───────────────────────────────────────────── 
+// ─────────────────────────────────────────────
 
 model Customer {
   id       Int    @id @default(autoincrement())
@@ -362,7 +424,7 @@ model Upload {
 
 // ─────────────────────────────────────────────
 // NOTIFICATIONS
-// ───────────────────────────────────────────── 
+// ─────────────────────────────────────────────
 
 model Notification {
   id Int @id @default(autoincrement())
