@@ -16,11 +16,7 @@ export const sendMessage = async (
       );
 
     case "WHATSAPP":
-      return sendWhatsAppMessage({
-        sellerId,
-        recipientId,
-        text,
-      });
+      throw new Error("WhatsApp messaging not implemented yet");
 
     default:
       throw new Error(
