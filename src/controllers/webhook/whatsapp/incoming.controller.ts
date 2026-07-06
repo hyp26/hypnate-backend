@@ -5,44 +5,50 @@ export const receiveMessage = async (
   res: Response
 ): Promise<Response> => {
   try {
-    console.log(
-      "Incoming WhatsApp Webhook:",
-      JSON.stringify(req.body, null, 2)
-    );
+    const value = req.body?.entry?.[0]?.changes?.[0]?.value;
 
-    const entry = req.body?.entry?.[0];
+if (!value) {
+  return res.sendStatus(200);
+}
 
-    if (!entry) {
-      return res.sendStatus(200);
-    }
+const message = value.messages?.[0];
 
-    const change = entry?.changes?.[0];
+if (!message) {
+  return res.sendStatus(200);
+}
 
-    const message =
-      change?.value?.messages?.[0];
+const contact = value.contacts?.[0];
 
-    if (!message) {
-      return res.sendStatus(200);
-    }
+const phoneNumberId =
+  value.metadata?.phone_number_id;
 
-    const customerId = message.from;
+const customerPhone = message.from;
 
-    const content =
-      message?.text?.body || "";
+const customerName =
+  contact?.profile?.name ?? "Unknown";
 
-    const timestamp =
-      message?.timestamp;
+const text =
+  message.text?.body ?? "";
 
-    console.log({
-      customerId,
-      content,
-      timestamp,
-    });
+const externalMessageId =
+  message.id;
 
-    return res.sendStatus(200);
+const timestamp = new Date(
+  Number(message.timestamp) * 1000
+);
+
+console.log({
+  phoneNumberId,
+  customerPhone,
+  customerName,
+  text,
+  externalMessageId,
+  timestamp,
+});
+
+return res.sendStatus(200);
   } catch (error) {
     console.error(error);
-
     return res.sendStatus(500);
   }
 };

@@ -1,8 +1,6 @@
-// src/services/messaging/whatsapp.service.ts
-
 import axios from "axios";
 
-const GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v23.0";
+const GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
 const GRAPH_URL = `https://graph.facebook.com/${GRAPH_VERSION}`;
 
 export const exchangeCodeForAccessToken = async (
@@ -89,6 +87,46 @@ export const sendWhatsAppMessage = async (
     {
       headers: {
         Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+  return data;
+};
+
+export const sendWhatsAppTemplate = async (
+  accessToken: string,
+  phoneNumberId: string,
+  to: string,
+  templateName: string,
+  parameters: string[]
+) => {
+  const { data } = await axios.post(
+    `${GRAPH_URL}/${phoneNumberId}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "template",
+      template: {
+        name: templateName,
+        language: {
+          code: "en_US",
+        },
+        components: [
+          {
+            type: "body",
+            parameters: parameters.map((text) => ({
+              type: "text",
+              text,
+            })),
+          },
+        ],
+      },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
       },
     }
   );
