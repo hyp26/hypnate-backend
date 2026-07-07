@@ -4,6 +4,7 @@ export const receiveMessage = async (
   req: Request,
   res: Response
 ): Promise<Response> => {
+  console.log("🔥 WhatsApp webhook hit");
   try {
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
 
