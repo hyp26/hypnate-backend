@@ -33,6 +33,7 @@ import channelRoutes from "./routes/channel.routes";
 // Webhooks
 import telegramWebhookRoutes from "./routes/webhook/telegram";
 import messageRoutes from "./routes/webhook/message.routes";
+import whatsappWebhookRoutes from "./routes/webhook/whatsapp";
 
 // Middleware
 import errorHandler from "./middleware/errorHandler";
@@ -109,7 +110,8 @@ app.use("/api/hypnate-x", hypnatexRoutes);
 app.use("/api/onboarding", onboardingRoutes);
 
 /* ---------------- WEBHOOKS ---------------- */
-app.use("/api/webhooks", telegramWebhookRoutes);
+app.use("/api/webhooks/telegram", telegramWebhookRoutes);
+app.use("/api/webhooks/whatsapp", whatsappWebhookRoutes);
 app.use("/api/messages", messageRoutes);
 
 /* ---------------- STATIC ---------------- */
