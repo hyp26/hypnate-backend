@@ -56,14 +56,13 @@
 
 import { Request, Response } from "express";
 
-export const receiveMessage = async (
-  req: Request,
-  res: Response
-) => {
-  console.log("================================");
-  console.log("🔥 WHATSAPP WEBHOOK RECEIVED");
-  console.log(JSON.stringify(req.body, null, 2));
-  console.log("================================");
+export const receiveMessage = async (req: Request, res: Response) => {
+  console.log("🔥 WEBHOOK HIT");
+  console.log(req.method);
+  console.log(req.headers);
+  console.log(req.body);
 
-  return res.sendStatus(200);
+  return res.status(200).json({
+    success: true,
+  });
 };

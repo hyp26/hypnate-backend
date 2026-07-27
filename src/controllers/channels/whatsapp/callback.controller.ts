@@ -40,6 +40,12 @@ export const whatsappCallback = async (
       token.access_token
     );
 
+    console.log("Businesses");
+    console.log(JSON.stringify(businesses, null, 2));
+
+    console.log("WABAs");
+    console.log(JSON.stringify(wabas, null, 2));
+
     if (!wabas.length) {
       return res.status(404).json({
         message: "No WhatsApp Business Account found",
@@ -51,6 +57,8 @@ export const whatsappCallback = async (
       wabas[0].id,
       token.access_token
     );
+    console.log("Phone Numbers");
+    console.log(JSON.stringify(phoneNumbers, null, 2));
 
     return res.json({
       success: true,
