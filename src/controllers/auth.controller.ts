@@ -137,7 +137,7 @@ export const register = async (req: Request, res: Response, next: NextFunction) 
         verificationToken,
         verificationTokenExpiry,
       },
-      select: { id: true, name: true, email: true, role: true, sellerId: true, emailVerified: true, createdAt: true },
+      select: { id: true, name: true, email: true, role: true, sellerId: true, emailVerified: true, createdAt: true, seller: true },
     });
 
     // NEW: fire the verification email. If Resend throws, we still want the
@@ -181,7 +181,7 @@ export const verifyEmail = async (req: Request, res: Response, next: NextFunctio
     const user = await prisma.user.update({
       where: { id: existing.id },
       data: { emailVerified: true, verificationToken: null, verificationTokenExpiry: null },
-      select: { id: true, name: true, email: true, role: true, sellerId: true, emailVerified: true },
+      select: { id: true, name: true, email: true, role: true, sellerId: true, emailVerified: true, seller: true },
     });
 
     // Log this browser in too — the link is usually opened in a different
@@ -247,7 +247,7 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
 
     const user = await prisma.user.findUnique({
       where: { email: email.toLowerCase() },
-      select: { id: true, email: true, name: true, password: true, role: true, sellerId: true, authProvider: true },
+      select: { id: true, email: true, name: true, password: true, role: true, sellerId: true, authProvider: true, emailVerified: true, seller: true },
     });
 
     if (!user)
@@ -268,7 +268,7 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
 
     return res.status(200).json({
       message: "Login successful",
-      user: { id: user.id, name: user.name, email: user.email, role: user.role, sellerId: user.sellerId },
+      user: { id: user.id, name: user.name, email: user.email, role: user.role, sellerId: user.sellerId, emailVerified: user.emailVerified, seller: user.seller },
     });
   } catch (err) {
     next(err);
