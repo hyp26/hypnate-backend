@@ -17,6 +17,7 @@ const IS_PROD = process.env.NODE_ENV === "production";
 
 const ACCESS_TOKEN_MAX_AGE = 15 * 60 * 1000;
 const REFRESH_TOKEN_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+const VERIFICATION_TOKEN_MAX_AGE = 24 * 60 * 60 * 1000; // 24 hours
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -57,6 +58,33 @@ const clearAuthCookies = (res: Response) => {
 const validateEmail = (email: string) =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
+// NEW: shared by register() and resendVerification() so the template only
+// lives in one place.
+const sendVerificationEmail = async (to: string, name: string, token: string) => {
+  const verifyUrl = `${FRONTEND_URL}/verify-email?token=${token}`;
+
+  await resend.emails.send({
+    from: "Hypnate <onboarding@resend.dev>", // change to noreply@hypnate.in after domain verified
+    to,
+    subject: "Verify your Hypnate account",
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+        <h2 style="color:#111">Hi ${name || "there"},</h2>
+        <p style="color:#555">Thanks for signing up for Hypnate. Click the button below to verify your email and activate your account.</p>
+        <a href="${verifyUrl}"
+           style="display:inline-block;margin-top:16px;padding:12px 24px;background:#0d9488;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">
+          Verify my email
+        </a>
+        <p style="color:#888;font-size:13px;margin-top:24px">
+          Or paste this link into your browser:<br />
+          <a href="${verifyUrl}" style="color:#0d9488">${verifyUrl}</a>
+        </p>
+        <p style="color:#888;font-size:12px">This link expires in 24 hours.</p>
+      </div>
+    `,
+  });
+};
+
 /* ----------------------------------------------------
    REGISTER
 ---------------------------------------------------- */
@@ -94,6 +122,11 @@ export const register = async (req: Request, res: Response, next: NextFunction) 
       seller = await prisma.seller.create({ data: { businessName, phone } });
     }
 
+    // NEW: generate the verification token up front so it can be written in
+    // the same create() call as the rest of the user record.
+    const verificationToken = crypto.randomBytes(32).toString("hex");
+    const verificationTokenExpiry = new Date(Date.now() + VERIFICATION_TOKEN_MAX_AGE);
+
     const user = await prisma.user.create({
       data: {
         name,
@@ -101,15 +134,99 @@ export const register = async (req: Request, res: Response, next: NextFunction) 
         password: hashed,
         role: userRole,
         sellerId: seller?.id ?? null,
+        verificationToken,
+        verificationTokenExpiry,
       },
-      select: { id: true, name: true, email: true, role: true, sellerId: true, createdAt: true },
+      select: { id: true, name: true, email: true, role: true, sellerId: true, emailVerified: true, createdAt: true },
     });
+
+    // NEW: fire the verification email. If Resend throws, we still want the
+    // account to exist and the person to be logged in — they can hit
+    // "resend" from the verify-email screen — so this is intentionally not
+    // wrapped in a way that fails registration.
+    try {
+      await sendVerificationEmail(user.email, user.name, verificationToken);
+    } catch (emailErr) {
+      console.error("Failed to send verification email:", emailErr);
+    }
 
     const accessToken  = createAccessToken(user);
     const refreshToken = createRefreshToken(user.id);
     setAuthCookies(res, accessToken, refreshToken);
 
     return res.status(201).json({ message: "Registration successful", user });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ----------------------------------------------------
+   VERIFY EMAIL
+---------------------------------------------------- */
+export const verifyEmail = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { token } = req.body;
+
+    if (!token)
+      return res.status(400).json({ message: "Verification token is required" });
+
+    const existing = await prisma.user.findUnique({ where: { verificationToken: token } });
+
+    if (!existing)
+      return res.status(400).json({ message: "This verification link is invalid or has expired." });
+
+    if (existing.verificationTokenExpiry && existing.verificationTokenExpiry < new Date())
+      return res.status(400).json({ message: "This verification link has expired. Please request a new one." });
+
+    const user = await prisma.user.update({
+      where: { id: existing.id },
+      data: { emailVerified: true, verificationToken: null, verificationTokenExpiry: null },
+      select: { id: true, name: true, email: true, role: true, sellerId: true, emailVerified: true },
+    });
+
+    // Log this browser in too — the link is usually opened in a different
+    // browser/device than the one the person signed up on.
+    const accessToken  = createAccessToken(user);
+    const refreshToken = createRefreshToken(user.id);
+    setAuthCookies(res, accessToken, refreshToken);
+
+    return res.status(200).json({ message: "Email verified", user });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ----------------------------------------------------
+   RESEND VERIFICATION
+---------------------------------------------------- */
+export const resendVerification = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email } = req.body;
+
+    const genericResponse = { message: "If that email exists, a verification link has been sent." };
+
+    if (!email || !validateEmail(email))
+      return res.status(200).json(genericResponse);
+
+    const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+
+    if (!user)
+      return res.status(200).json(genericResponse);
+
+    if (user.emailVerified)
+      return res.status(200).json({ message: "This email is already verified." });
+
+    const verificationToken = crypto.randomBytes(32).toString("hex");
+    const verificationTokenExpiry = new Date(Date.now() + VERIFICATION_TOKEN_MAX_AGE);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { verificationToken, verificationTokenExpiry },
+    });
+
+    await sendVerificationEmail(user.email, user.name, verificationToken);
+
+    return res.status(200).json(genericResponse);
   } catch (err) {
     next(err);
   }
@@ -272,6 +389,7 @@ export const getProfile = async (req: AuthRequest, res: Response, next: NextFunc
       select: {
         id: true, name: true, email: true, role: true,
         sellerId: true, authProvider: true, createdAt: true,
+        emailVerified: true,
         seller: true,
         // password intentionally excluded
       },

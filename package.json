@@ -43,7 +43,7 @@
     "node-telegram-bot-api": "^0.67.0",
     "papaparse": "^5.5.3",
     "pdfkit": "^0.17.2",
-    "resend": "^6.9.4",
+    "resend": "^6.18.1",
     "socket.io": "^4.8.3",
     "streamifier": "^0.1.1",
     "uuid": "^13.0.0",

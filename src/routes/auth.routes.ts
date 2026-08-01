@@ -7,9 +7,12 @@ import {
   forgotPassword,
   getProfile,
   updateProfile,
+  verifyEmail,
+  resendVerification
 } from "../controllers/auth.controller";
 import { resetPassword } from "../controllers/passwordReset.controller";
 import { verifyToken } from "../middleware/authMiddleware";
+
 
 const router = Router();
 
@@ -24,6 +27,10 @@ router.post("/reset-password/:token", resetPassword as RequestHandler );
 // Refresh access token using httpOnly refresh cookie
 // Frontend calls this when it gets 401 + code: "TOKEN_EXPIRED"
 router.post("/refresh", refreshToken as RequestHandler);
+
+// Email verification routes
+router.post("/verify-email", verifyEmail);
+router.post("/resend-verification", resendVerification);
 
 /* ---------------------------
    PROTECTED
