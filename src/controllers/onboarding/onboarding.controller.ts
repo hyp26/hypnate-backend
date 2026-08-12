@@ -1,7 +1,7 @@
 import { Response, NextFunction } from "express";
-import prisma from "../prisma/client";
-import { AuthRequest } from "../middleware/authMiddleware";
-import { encrypt } from "../services/crypto.service";
+import prisma from "../../prisma/client";
+import { AuthRequest } from "../../middleware/authMiddleware";
+import { encrypt } from "../../services/crypto.service";
 import Papa from "papaparse";
 
 /* ─────────────────────────────────────────────

@@ -29,6 +29,7 @@ import onboardingRoutes from "./routes/onboarding.routes";
 import paymentRoutes from "./routes/payment.routes";
 import waitlistRoutes from "./routes/waitlist.routes";
 import channelRoutes from "./routes/channel.routes";
+import healthRoutes from "./routes/health.routes";
 
 // Webhooks
 import telegramWebhookRoutes from "./routes/webhook/telegram";
@@ -50,6 +51,8 @@ const allowedOrigins = [
   "https://hypnate.in",
   "https://www.hypnate.in",
 ];
+
+app.use("/health", healthRoutes);
 
 app.use(
   cors({
