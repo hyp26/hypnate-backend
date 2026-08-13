@@ -1,7 +1,25 @@
 import Groq from "groq-sdk";
 import type { ParsedProductRow } from "./parseStructuredFile";
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+// CHANGED: was constructed at module load (`const groq = new Groq(...)`),
+// which meant a missing GROQ_API_KEY crashed the entire server on startup —
+// this whole file gets require'd transitively through onboarding.controller
+// just for the CSV/business/payments routes too. Building it lazily, only
+// when AI extraction is actually invoked, means a missing key only fails
+// that one request instead of taking down login/orders/everything else.
+let groqClient: Groq | null = null;
+
+function getGroqClient(): Groq {
+  if (!process.env.GROQ_API_KEY) {
+    throw new Error(
+      "AI catalog extraction isn't configured (GROQ_API_KEY is missing). CSV/XLSX uploads still work without it."
+    );
+  }
+  if (!groqClient) {
+    groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
+  }
+  return groqClient;
+}
 
 // Llama 3.3 70B on Groq: strong enough for structured extraction, fast, and
 // comfortably inside the free tier for onboarding-volume traffic. Override
@@ -32,7 +50,7 @@ export async function extractProductsWithAI(rawText: string): Promise<ParsedProd
   // huge, trim rather than fail outright — a partial catalog beats none.
   const text = rawText.slice(0, 40000);
 
-  const completion = await groq.chat.completions.create({
+  const completion = await getGroqClient().chat.completions.create({
     model: MODEL,
     temperature: 0,
     response_format: { type: "json_object" },
