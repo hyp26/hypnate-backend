@@ -62,7 +62,6 @@
     "@types/multer": "^2.2.0",
     "@types/node": "^24.10.0",
     "@types/papaparse": "^5.5.2",
-    "@types/pdf-parse": "^1.1.5",
     "@types/pdfkit": "^0.17.4",
     "@types/streamifier": "^0.1.2",
     "nodemon": "^3.1.10",

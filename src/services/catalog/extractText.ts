@@ -1,10 +1,17 @@
-import pdfParse from "pdf-parse";
+import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
 
 export async function extractTextFromFile(buffer: Buffer, mimetype: string): Promise<string> {
   if (mimetype === "application/pdf") {
-    const data = await pdfParse(buffer);
-    return data.text;
+    // pdf-parse v2 replaced the old callable-function API with a class:
+    // new PDFParse({ data }).getText() instead of pdfParse(buffer).
+    const parser = new PDFParse({ data: buffer });
+    try {
+      const result = await parser.getText();
+      return result.text;
+    } finally {
+      await parser.destroy();
+    }
   }
 
   if (
