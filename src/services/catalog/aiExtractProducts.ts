@@ -57,7 +57,7 @@ export async function extractProductsWithAI(rawText: string): Promise<ParsedProd
   }
 
   return parsed.products
-    .map((p: any) => {
+    .map((p: any): ParsedProductRow | null => {
       const name = String(p?.name ?? "").trim();
       const price = Number(p?.price);
       if (!name || Number.isNaN(price)) return null;
@@ -69,5 +69,5 @@ export async function extractProductsWithAI(rawText: string): Promise<ParsedProd
         stock: Number.isFinite(Number(p?.stock)) ? Number(p.stock) : 0,
       };
     })
-    .filter((p: ParsedProductRow | null): p is ParsedProductRow => p !== null);
+    .filter((p): p is ParsedProductRow => p !== null);
 }
