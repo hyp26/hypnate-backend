@@ -12,14 +12,14 @@ if (!fs.existsSync(uploadsDir)) {
 
 /* ---------------- STORAGE ---------------- */
 
-// Local disk storage
 const diskStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     cb(null, uploadsDir);
   },
 
   filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
+    const ext = path.extname(file.originalname).toLowerCase();
+
     const filename = `${Date.now()}-${Math.round(
       Math.random() * 1_000_000_000
     )}${ext}`;
@@ -28,7 +28,6 @@ const diskStorage = multer.diskStorage({
   },
 });
 
-// Cloud storage mode (buffer only)
 const memoryStorage = multer.memoryStorage();
 
 /* ---------------- LIMITS ---------------- */
@@ -36,7 +35,10 @@ const memoryStorage = multer.memoryStorage();
 export const MAX_FILE_SIZE =
   Number(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024;
 
-/* ---------------- FILE FILTERS ---------------- */
+export const MAX_CATALOG_FILE_SIZE =
+  Number(process.env.MAX_CATALOG_FILE_SIZE) || 15 * 1024 * 1024;
+
+/* ---------------- FILE TYPES ---------------- */
 
 const IMAGE_MIME_TYPES = [
   "image/jpeg",
@@ -45,48 +47,86 @@ const IMAGE_MIME_TYPES = [
   "image/gif",
 ];
 
-// CHANGED: this used to be a single hardcoded imageFileFilter. It's now a
-// factory so different upload types (images vs. catalog documents) can each
-// bring their own allowed list instead of sharing one.
-function makeFileFilter(allowedMimeTypes: string[], rejectionMessage: string) {
+const IMAGE_EXTENSIONS = [
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".webp",
+  ".gif",
+];
+
+const CATALOG_MIME_TYPES = [
+  "text/csv",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/plain",
+];
+
+const CATALOG_EXTENSIONS = [
+  ".csv",
+  ".xls",
+  ".xlsx",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".txt",
+];
+
+/* ---------------- HELPERS ---------------- */
+
+function makeFileFilter(
+  allowedMimeTypes: string[],
+  allowedExtensions: string[],
+  rejectionMessage: string
+) {
   return function fileFilter(
     _req: Request,
     file: Express.Multer.File,
     cb: FileFilterCallback
   ): void {
-    if (!allowedMimeTypes.includes(file.mimetype)) {
+    const extension = path
+      .extname(file.originalname)
+      .toLowerCase();
+
+    const mimeAllowed =
+      allowedMimeTypes.includes(file.mimetype);
+
+    const extensionAllowed =
+      allowedExtensions.includes(extension);
+
+    if (!mimeAllowed || !extensionAllowed) {
       return cb(new Error(rejectionMessage));
     }
+
+    /*
+     * Multer's fileFilter runs before the complete file buffer
+     * is available, so magic-byte validation is performed by
+     * the route after multer has parsed the file.
+     */
+
     cb(null, true);
   };
 }
 
+/* ---------------- FILTERS ---------------- */
+
 const imageFileFilter = makeFileFilter(
   IMAGE_MIME_TYPES,
-  "Only image files (jpeg, png, webp, gif) are allowed"
+  IMAGE_EXTENSIONS,
+  "Only JPEG, PNG, WebP, and GIF image files are allowed"
 );
-
-const CATALOG_MIME_TYPES = [
-  "text/csv",
-  "application/vnd.ms-excel",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
-  "application/pdf",
-  "application/msword", // .doc
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
-  "text/plain",
-];
 
 const catalogFileFilter = makeFileFilter(
   CATALOG_MIME_TYPES,
+  CATALOG_EXTENSIONS,
   "Unsupported file type. Upload a CSV, Excel, PDF, Word, or text file."
 );
 
-/* ---------------- FACTORY ---------------- */
+/* ---------------- MULTER FACTORY ---------------- */
 
-// CHANGED: now takes storage/filter/size as options instead of assuming
-// images every time. Defaults match the original behavior exactly, so
-// existing calls with no options still produce the same image-only,
-// 5MB-limited uploader as before.
 export function getMulterForMode(
   mode: "local" | "cloud",
   options?: {
@@ -96,23 +136,23 @@ export function getMulterForMode(
 ) {
   return multer({
     storage: mode === "local" ? diskStorage : memoryStorage,
+
     limits: {
       fileSize: options?.maxFileSize ?? MAX_FILE_SIZE,
+      files: 1,
     },
+
     fileFilter: options?.fileFilter ?? imageFileFilter,
   });
 }
 
 /* ---------------- READY-TO-USE EXPORTS ---------------- */
 
-// Unchanged — same image-only uploaders as before.
 export const localUpload = getMulterForMode("local");
+
 export const cloudUpload = getMulterForMode("cloud");
 
-// NEW: for the catalog import step. Memory storage (the file's parsed
-// in-request and never needs to touch disk) and a larger size cap, since a
-// PDF/DOCX catalog is typically bigger than a product photo.
 export const catalogUpload = getMulterForMode("cloud", {
   fileFilter: catalogFileFilter,
-  maxFileSize: Number(process.env.MAX_CATALOG_FILE_SIZE) || 15 * 1024 * 1024,
+  maxFileSize: MAX_CATALOG_FILE_SIZE,
 });

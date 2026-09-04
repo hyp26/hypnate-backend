@@ -1,6 +1,7 @@
 import { Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
+import { logger } from "../utils/logger";
 
 export const exportOrders = async (
   req: AuthRequest,
@@ -55,7 +56,7 @@ export const exportOrders = async (
 
     return res.send(csv);
   } catch (err) {
-    console.error("Export error:", err);
+    logger.error("Order export failed", err);
     next(err);
   }
 };

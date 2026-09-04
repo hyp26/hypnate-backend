@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { logger } from "../../../utils/logger";
 
 export const sendMessage = async (
   req: Request,
@@ -10,17 +11,12 @@ export const sendMessage = async (
       message,
     } = req.body;
 
-    console.log({
-      phoneNumber,
-      message,
-    });
-
     return res.status(200).json({
       success: true,
       message: "Message queued",
     });
   } catch (error) {
-    console.error(error);
+    logger.error("WhatsApp outgoing message failed", error);
 
     return res.status(500).json({
       success: false,

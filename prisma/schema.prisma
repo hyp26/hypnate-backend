@@ -269,6 +269,9 @@ model Message {
 
   @@index([conversationId])
   @@index([conversationId, createdAt])
+  // Prevent duplicate processing of the same provider message.
+  // PostgreSQL permits multiple NULL values in a unique index.
+  @@unique([conversationId, externalMessageId])
 }
 
 // ─────────────────────────────────────────────
@@ -537,13 +540,21 @@ model BuildJob {
 }
 
 // ─────────────────────────────────────────────
-// WAITLIST
+// CONTACT SUBMISSIONS
 // ─────────────────────────────────────────────
 
-model WaitlistSubscriber {
-  id Int @id @default(autoincrement())
+model ContactSubmission {
+  id        Int      @id @default(autoincrement())
 
-  email String @unique
+  name      String
+  email     String
+  phone     String?
+  company   String?
+  subject   String?
+  message   String
 
   createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([createdAt])
 }

@@ -3,6 +3,7 @@ import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
 import { createNotification } from "../services/notification.service";
 import { getSellerId } from "../services/seller.service";
+import { logger } from "../utils/logger";
 
 const LOW_STOCK_THRESHOLD = 10;
 
@@ -262,7 +263,7 @@ export const createOrder = async (
           link: `/products/${product.id}`,
         });
       } catch (notifyErr) {
-        console.error("Low stock notification failed:", notifyErr);
+        logger.error("Low stock notification failed", notifyErr);
       }
     }
 
@@ -275,7 +276,7 @@ export const createOrder = async (
         link: `/orders/${order.id}`,
       });
     } catch (notifyErr) {
-      console.error("New order notification failed:", notifyErr);
+      logger.error("New order notification failed", notifyErr);
     }
 
     res.status(201).json(order);

@@ -1,4 +1,5 @@
 import prisma from "../prisma/client";
+import { logger } from "../utils/logger";
 
 export interface NotificationPayload {
   sellerId: number;
@@ -26,11 +27,7 @@ export const createNotification = async (
 
     return true;
   } catch (err) {
-    console.error(
-      "[NotificationService] Failed to create notification:",
-      err
-    );
-
+    logger.error("Notification service error", err);  
     return false;
   }
 };
