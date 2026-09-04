@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import PDFDocument from "pdfkit";
 import prisma from "../prisma/client";
 import jwt from "jsonwebtoken";
+import { logger } from "../utils/logger";
 
 /**
  * Invoice generation route (no verifyToken middleware)
@@ -147,7 +148,7 @@ export const generateInvoice = async (req: Request, res: Response) => {
     doc.end();
 
   } catch (err) {
-    console.error("Invoice Error:", err);
+    logger.error("Failed to generate invoice", err);
     res.status(500).json({ message: "Failed to generate invoice" });
   }
 };

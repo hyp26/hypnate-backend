@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../../../prisma/client";
 import { sendTelegramMessage } from "../../../services/messaging/telegram.service";
+import { logger } from "../../../utils/logger";
 
 export const telegramWebhook = async (
   req: Request,
@@ -35,7 +36,7 @@ export const telegramWebhook = async (
         "Got your message 🚀"
       );
     } catch (err) {
-      console.error("Auto reply failed:", err);
+      logger.error("Auto reply failed:", err);
     }
 
     let conversation =
@@ -98,15 +99,18 @@ export const telegramWebhook = async (
       }
     );
 
-    io.emit("conversation_updated", {
-      conversationId: updatedConversation.id,
-      conversation: updatedConversation,
-    });
+    io.to(`seller_${sellerId}`).emit(
+      "conversation_updated",
+      {
+        conversationId: updatedConversation.id,
+        conversation: updatedConversation,
+      }
+    );
 
     return res.sendStatus(200);
   } catch (err) {
-    console.error(
-      "Telegram webhook error:",
+    logger.error(
+      "Telegram incoming webhook processing failed:",
       err
     );
 

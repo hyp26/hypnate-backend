@@ -1,13 +1,14 @@
 import { sendTelegramMessage } from "./telegram.service";
-import { sendWhatsAppMessage } from "./whatsapp.service";
+import { sendWhatsAppMessageForSeller } from "./whatsapp.service";
 
 export const sendMessage = async (
   platform: string,
   sellerId: number,
   recipientId: string,
-  text: string
+  text: string,
+  channelId?: string
 ) => {
-  switch (platform) {
+  switch (platform.toUpperCase()) {
     case "TELEGRAM":
       return sendTelegramMessage(
         sellerId,
@@ -16,7 +17,12 @@ export const sendMessage = async (
       );
 
     case "WHATSAPP":
-      throw new Error("WhatsApp messaging not implemented yet");
+      return sendWhatsAppMessageForSeller(
+        sellerId,
+        recipientId,
+        text,
+        channelId
+      );
 
     default:
       throw new Error(

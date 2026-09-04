@@ -1,6 +1,9 @@
 export interface MessagingService {
   sendMessage(
-    chatId: string,
+    platform: string,
+    sellerId: number,
+    recipientId: string,
     text: string,
+    channelId?: string
   ): Promise<any>;
 }

@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../../../prisma/client";
 import { sendTelegramMessage } from "../../../services/messaging/telegram.service";
+import { logger } from "../../../utils/logger";
 
 export const sendMessage = async (
   req: Request,
@@ -78,10 +79,7 @@ export const sendMessage = async (
       message: newMessage,
     });
   } catch (err) {
-    console.error(
-      "Send message error:",
-      err
-    );
+    logger.error("Failed to send Telegram message", err);
 
     return res.status(500).json({
       message: "Failed to send message",

@@ -1,30 +1,35 @@
 import { Request, Response, NextFunction } from "express";
+import { logger } from "../utils/logger";
 
-const IS_PROD = process.env.NODE_ENV === "production";
-
-const errorHandler = (
-  err: any,
-  _req: Request,
+export const errorHandler = (
+  err: unknown,
+  req: Request,
   res: Response,
   _next: NextFunction
-) => {
-  console.error("🔥 Error:", err);
+): void => {
+  logger.error("Unhandled application error", err, {
+    method: req.method,
+    path: req.path,
+  });
 
-  const statusCode = err.statusCode || 500;
+  const statusCode =
+    typeof err === "object" &&
+    err !== null &&
+    "statusCode" in err &&
+    typeof (err as { statusCode?: unknown }).statusCode === "number"
+      ? (err as { statusCode: number }).statusCode
+      : 500;
 
-  return res.status(statusCode).json({
-    message:
-      statusCode === 500
-        ? "Internal server error"
-        : err.message,
+  const message =
+    process.env.NODE_ENV === "production"
+      ? "Internal server error"
+      : err instanceof Error
+        ? err.message
+        : "Internal server error";
 
-    ...(IS_PROD
-      ? {}
-      : {
-          stack: err.stack,
-          error: err.message,
-        }),
+  res.status(statusCode).json({
+    success: false,
+    message,
   });
 };
 
-export default errorHandler;

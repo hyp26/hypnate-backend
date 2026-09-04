@@ -2,6 +2,7 @@ import { Response, NextFunction } from "express";
 import axios from "axios";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
+import { logger } from "../utils/logger";
 
 const PYTHON_WORKER_URL = process.env.PYTHON_WORKER_URL as string;
 const INTERNAL_API_KEY  = process.env.INTERNAL_API_KEY as string; // ✅ matches internal routes
@@ -131,11 +132,11 @@ export const startBuild = async (
       products,
       seller,
     }).catch((err) => {
-      console.error(`[HypnateX] Worker trigger failed for job ${buildJob.id}:`, err.message);
+      logger.error(`[HypnateX] Worker trigger failed for job ${buildJob.id}:`, err.message);
       (prisma as any).buildJob.update({
         where: { id: buildJob.id },
         data: { status: "FAILED", errorMsg: "Worker service unavailable: " + err.message },
-      }).catch(console.error);
+      }).catch(logger.error);
     });
 
     return res.status(202).json({
@@ -275,5 +276,8 @@ const triggerPythonWorker = async (jobId: number, payload: object) => {
       "x-internal-key": INTERNAL_API_KEY, // ✅ matches hypnatex.internal.routes.ts
     },
   });
-  console.log(`[HypnateX] Job ${jobId} dispatched to worker at ${PYTHON_WORKER_URL}`);
+  
+  logger.info("HypnateX job dispatched to worker", {
+  jobId,
+});
 };

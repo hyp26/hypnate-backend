@@ -1,7 +1,24 @@
 import axios from "axios";
+import prisma from "../../prisma/client";
+import { decrypt } from "../crypto.service";
 
-const GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
-const GRAPH_URL = `https://graph.facebook.com/${GRAPH_VERSION}`;
+const GRAPH_VERSION =
+  process.env.META_GRAPH_VERSION || "v25.0";
+
+const GRAPH_URL =
+  `https://graph.facebook.com/${GRAPH_VERSION}`;
+
+type WhatsAppPhoneNumber = {
+  id?: string;
+  phone_number_id?: string;
+};
+
+type WhatsAppMetadata = {
+  phoneNumberId?: string;
+  primaryPhoneNumberId?: string;
+  phoneNumberIds?: unknown;
+  phoneNumbers?: unknown;
+};
 
 export const exchangeCodeForAccessToken = async (
   code: string
@@ -87,11 +104,109 @@ export const sendWhatsAppMessage = async (
     {
       headers: {
         Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
       },
     }
   );
 
   return data;
+};
+
+export const sendWhatsAppMessageForSeller = async (
+  sellerId: number,
+  to: string,
+  text: string,
+  phoneNumberId?: string
+) => {
+  const connection =
+    await prisma.channelConnection.findFirst({
+      where: {
+        sellerId,
+        platform: "WHATSAPP",
+        isActive: true,
+      },
+      select: {
+        accessToken: true,
+        metadata: true,
+      },
+    });
+
+  if (
+    !connection ||
+    !connection.accessToken
+  ) {
+    throw new Error(
+      "WhatsApp is not connected for this seller"
+    );
+  }
+
+  const metadata =
+    (connection.metadata ?? {}) as WhatsAppMetadata;
+
+  let resolvedPhoneNumberId =
+    phoneNumberId?.trim() ||
+    metadata.primaryPhoneNumberId ||
+    metadata.phoneNumberId;
+
+  if (!resolvedPhoneNumberId) {
+    if (
+      Array.isArray(metadata.phoneNumberIds) &&
+      metadata.phoneNumberIds.length > 0
+    ) {
+      resolvedPhoneNumberId = String(
+        metadata.phoneNumberIds[0]
+      );
+    }
+  }
+
+  if (!resolvedPhoneNumberId) {
+    if (
+      Array.isArray(metadata.phoneNumbers)
+    ) {
+      const first = metadata.phoneNumbers.find(
+        (phone): phone is WhatsAppPhoneNumber =>
+          !!phone &&
+          typeof phone === "object" &&
+          !!(
+            (phone as WhatsAppPhoneNumber).id ??
+            (phone as WhatsAppPhoneNumber)
+              .phone_number_id
+          )
+      );
+
+      resolvedPhoneNumberId = first
+        ? String(
+            first.id ??
+              first.phone_number_id
+          )
+        : undefined;
+    }
+  }
+
+  if (!resolvedPhoneNumberId) {
+    throw new Error(
+      "WhatsApp phone number is not configured"
+    );
+  }
+
+  let accessToken: string;
+
+  try {
+    accessToken = decrypt(
+      connection.accessToken
+    );
+  } catch {
+    throw new Error(
+      "WhatsApp access token could not be decrypted"
+    );
+  }
+
+  return sendWhatsAppMessage(
+    accessToken,
+    resolvedPhoneNumberId,
+    to,
+    text
+  );
 };
 
 export const sendWhatsAppTemplate = async (
