@@ -1,185 +1,244 @@
+import "dotenv/config";
 import { z } from "zod";
 
-const envSchema = z
-  .object({
-    NODE_ENV: z
-      .enum(["development", "test", "production"])
-      .default("development"),
+const optionalUrl = z.preprocess(
+  (value) =>
+    typeof value === "string" && value.trim() === ""
+      ? undefined
+      : value,
+  z.string().trim().url().optional()
+);
 
-    PORT: z.coerce.number().int().positive().default(4000),
+const optionalString = z.preprocess(
+  (value) =>
+    typeof value === "string" && value.trim() === ""
+      ? undefined
+      : value,
+  z.string().trim().optional()
+);
 
-    DATABASE_URL: z
-      .string()
-      .trim()
-      .min(1, "DATABASE_URL is required")
-      .url("DATABASE_URL must be a valid URL"),
+const envSchema = z.object({
+  // ---------------------------------------------------------------------------
+  // Application
+  // ---------------------------------------------------------------------------
 
-    JWT_SECRET: z
-      .string()
-      .trim()
-      .min(32, "JWT_SECRET must be at least 32 characters"),
+  NODE_ENV: z
+    .enum(["development", "test", "production"])
+    .default("development"),
 
-    REFRESH_SECRET: z
-      .string()
-      .trim()
-      .min(32, "REFRESH_SECRET must be at least 32 characters"),
+  PORT: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(4000),
 
-    ENCRYPTION_KEY: z
-      .string()
-      .trim()
-      .min(16, "ENCRYPTION_KEY must be at least 16 characters"),
+  // ---------------------------------------------------------------------------
+  // Database
+  // ---------------------------------------------------------------------------
 
-    FRONTEND_URL: z
-      .string()
-      .trim()
-      .url("FRONTEND_URL must be a valid URL"),
+  DATABASE_URL: z
+    .string()
+    .trim()
+    .min(1, "DATABASE_URL is required")
+    .url("DATABASE_URL must be a valid URL"),
 
-    RESEND_API_KEY: z
-      .string()
-      .trim()
-      .min(1, "RESEND_API_KEY is required"),
+  // ---------------------------------------------------------------------------
+  // Authentication / Security
+  // ---------------------------------------------------------------------------
 
-    CONTACT_NOTIFICATION_EMAIL: z
-      .string()
-      .trim()
-      .email("CONTACT_NOTIFICATION_EMAIL must be a valid email"),
+  JWT_SECRET: z
+    .string()
+    .trim()
+    .min(32, "JWT_SECRET must be at least 32 characters"),
 
-    CONTACT_FROM_EMAIL: z
-      .string()
-      .trim()
-      .min(1, "CONTACT_FROM_EMAIL is required"),
+  REFRESH_SECRET: z
+    .string()
+    .trim()
+    .min(32, "REFRESH_SECRET must be at least 32 characters"),
 
-    META_APP_ID: z
-      .string()
-      .trim()
-      .min(1, "META_APP_ID is required"),
+  ENCRYPTION_KEY: z
+    .string()
+    .trim()
+    .min(32, "ENCRYPTION_KEY must be at least 32 characters"),
 
-    META_APP_SECRET: z
-      .string()
-      .trim()
-      .min(1, "META_APP_SECRET is required"),
+  INTERNAL_API_KEY: z
+    .string()
+    .trim()
+    .min(32, "INTERNAL_API_KEY must be at least 32 characters"),
 
-    META_REDIRECT_URI: z
-      .string()
-      .trim()
-      .url("META_REDIRECT_URI must be a valid URL"),
+  // ---------------------------------------------------------------------------
+  // Frontend / CORS
+  // ---------------------------------------------------------------------------
 
-    WHATSAPP_VERIFY_TOKEN: z
-      .string()
-      .trim()
-      .min(16, "WHATSAPP_VERIFY_TOKEN must be at least 16 characters"),
+  FRONTEND_URL: z
+    .string()
+    .trim()
+    .url("FRONTEND_URL must be a valid URL"),
 
-    WEBHOOK_BASE_URL: z
-      .string()
-      .trim()
-      .url("WEBHOOK_BASE_URL must be a valid URL"),
+  // ---------------------------------------------------------------------------
+  // Email / Contact
+  // ---------------------------------------------------------------------------
 
-    INTERNAL_API_KEY: z
-      .string()
-      .trim()
-      .min(32, "INTERNAL_API_KEY must be at least 32 characters"),
+  RESEND_API_KEY: z
+    .string()
+    .trim()
+    .min(1, "RESEND_API_KEY is required"),
 
-    CLOUDINARY_CLOUD_NAME: z
-      .string()
-      .trim()
-      .min(1, "CLOUDINARY_CLOUD_NAME is required"),
+  CONTACT_NOTIFICATION_EMAIL: z
+    .string()
+    .trim()
+    .email(
+      "CONTACT_NOTIFICATION_EMAIL must be a valid email"
+    ),
 
-    CLOUDINARY_API_KEY: z
-      .string()
-      .trim()
-      .min(1, "CLOUDINARY_API_KEY is required"),
+  CONTACT_FROM_EMAIL: z
+    .string()
+    .trim()
+    .min(1, "CONTACT_FROM_EMAIL is required"),
 
-    CLOUDINARY_API_SECRET: z
-      .string()
-      .trim()
-      .min(1, "CLOUDINARY_API_SECRET is required"),
+  // ---------------------------------------------------------------------------
+  // Meta / WhatsApp
+  // ---------------------------------------------------------------------------
 
-    TOKEN_EXPIRY: z
-      .string()
-      .trim()
-      .default("7d"),
+  META_APP_ID: z
+    .string()
+    .trim()
+    .min(1, "META_APP_ID is required"),
 
-    SALT_ROUNDS: z.coerce
-      .number()
-      .int()
-      .min(10)
-      .max(15)
-      .default(10),
+  META_APP_SECRET: z
+    .string()
+    .trim()
+    .min(1, "META_APP_SECRET is required"),
 
-    META_GRAPH_VERSION: z
-      .string()
-      .trim()
-      .default("v25.0"),
+  META_REDIRECT_URI: z
+    .string()
+    .trim()
+    .url("META_REDIRECT_URI must be a valid URL"),
 
-    PYTHON_WORKER_URL: z
-      .string()
-      .trim()
-      .url()
-      .optional(),
+  META_GRAPH_VERSION: z
+    .string()
+    .trim()
+    .default("v25.0"),
 
-    GROQ_API_KEY: z
-      .string()
-      .trim()
-      .optional(),
+  WHATSAPP_VERIFY_TOKEN: z
+    .string()
+    .trim()
+    .min(
+      16,
+      "WHATSAPP_VERIFY_TOKEN must be at least 16 characters"
+    ),
 
-    GROQ_MODEL: z
-      .string()
-      .trim()
-      .default("llama-3.3-70b-versatile"),
+  // ---------------------------------------------------------------------------
+  // Webhooks
+  // ---------------------------------------------------------------------------
 
-    REDIS_URL: z
-      .string()
-      .trim()
-      .url()
-      .optional(),
+  WEBHOOK_BASE_URL: z
+    .string()
+    .trim()
+    .url("WEBHOOK_BASE_URL must be a valid URL"),
 
-    UPLOADS_DIR: z
-      .string()
-      .trim()
-      .default("./uploads"),
+  // ---------------------------------------------------------------------------
+  // Telegram
+  // ---------------------------------------------------------------------------
+  // No global Telegram bot token is required here.
+  // Telegram credentials are stored per ChannelConnection.
 
-    MAX_FILE_SIZE: z.coerce
-      .number()
-      .int()
-      .positive()
-      .default(5 * 1024 * 1024),
+  // ---------------------------------------------------------------------------
+  // AI / Workers
+  // ---------------------------------------------------------------------------
 
-    MAX_CATALOG_FILE_SIZE: z.coerce
-      .number()
-      .int()
-      .positive()
-      .default(15 * 1024 * 1024),
+  PYTHON_WORKER_URL: optionalUrl,
 
-    RAZORPAY_KEY_ID: z
-      .string()
-      .trim()
-      .optional(),
+  GROQ_API_KEY: optionalString,
 
-    RAZORPAY_KEY_SECRET: z
-      .string()
-      .trim()
-      .optional(),
-  })
-  .superRefine((env, ctx) => {
-    if (env.NODE_ENV === "production") {
-      if (!env.INTERNAL_API_KEY) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["INTERNAL_API_KEY"],
-          message: "INTERNAL_API_KEY is required in production",
-        });
-      }
-    }
-  });
+  GROQ_MODEL: z
+    .string()
+    .trim()
+    .default("llama-3.3-70b-versatile"),
+
+  // ---------------------------------------------------------------------------
+  // Redis
+  // ---------------------------------------------------------------------------
+
+  REDIS_URL: optionalUrl,
+
+  // ---------------------------------------------------------------------------
+  // Cloudinary
+  // ---------------------------------------------------------------------------
+
+  CLOUDINARY_CLOUD_NAME: z
+    .string()
+    .trim()
+    .min(1, "CLOUDINARY_CLOUD_NAME is required"),
+
+  CLOUDINARY_API_KEY: z
+    .string()
+    .trim()
+    .min(1, "CLOUDINARY_API_KEY is required"),
+
+  CLOUDINARY_API_SECRET: z
+    .string()
+    .trim()
+    .min(1, "CLOUDINARY_API_SECRET is required"),
+
+  // ---------------------------------------------------------------------------
+  // Authentication configuration
+  // ---------------------------------------------------------------------------
+
+  TOKEN_EXPIRY: z
+    .string()
+    .trim()
+    .default("7d"),
+
+  SALT_ROUNDS: z.coerce
+    .number()
+    .int()
+    .min(10)
+    .max(15)
+    .default(10),
+
+  // ---------------------------------------------------------------------------
+  // Uploads
+  // ---------------------------------------------------------------------------
+
+  UPLOADS_DIR: z
+    .string()
+    .trim()
+    .default("./uploads"),
+
+  MAX_FILE_SIZE: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5 * 1024 * 1024),
+
+  MAX_CATALOG_FILE_SIZE: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(15 * 1024 * 1024),
+
+  // ---------------------------------------------------------------------------
+  // Payments
+  // ---------------------------------------------------------------------------
+
+  RAZORPAY_KEY_ID: optionalString,
+
+  RAZORPAY_KEY_SECRET: optionalString,
+});
 
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
   const issues = parsed.error.issues
-    .map(
-      (issue) =>
-        `${issue.path.join(".") || "environment"}: ${issue.message}`
-    )
+    .map((issue) => {
+      const path =
+        issue.path.length > 0
+          ? issue.path.join(".")
+          : "environment";
+
+      return `${path}: ${issue.message}`;
+    })
     .join("\n");
 
   throw new Error(

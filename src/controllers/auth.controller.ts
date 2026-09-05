@@ -141,7 +141,7 @@ export const revokeRefreshSession = async (
 const baseCookieOptions: CookieOptions = {
   httpOnly: true,
   secure: IS_PROD,
-  sameSite: IS_PROD ? "none" : "lax",
+  sameSite: "lax",
 };
 
 const setAuthCookies = (

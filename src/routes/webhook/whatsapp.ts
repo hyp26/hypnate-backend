@@ -1,26 +1,19 @@
-import { Router } from "express";
-
-import { verifyWebhook } from "../../controllers/webhook/whatsapp/verify.controller";
-import { receiveMessage } from "../../controllers/webhook/whatsapp/incoming.controller";
-import { verifyWhatsAppSignature } from "../../middleware/whatsapp-signature.middleware";
+import { Router, RequestHandler } from "express";
+import { sendMessage } from "../../controllers/webhook/telegram/outgoing.controller";
+import { verifyToken } from "../../middleware/authMiddleware";
 
 const router = Router();
 
-/*
- * Meta webhook verification handshake.
+/**
+ * Legacy Telegram send endpoint.
  *
- * This is a GET request and does not use X-Hub-Signature-256.
- */
-router.get("/", verifyWebhook);
-
-/*
- * All incoming WhatsApp webhook events must pass
- * Meta signature verification before processing.
+ * It remains temporarily for compatibility with older clients,
+ * but it is fully authenticated and tenant-scoped.
  */
 router.post(
-  "/",
-  verifyWhatsAppSignature,
-  receiveMessage
+  "/send",
+  verifyToken as RequestHandler,
+  sendMessage
 );
 
 export default router;

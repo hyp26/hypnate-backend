@@ -1,4 +1,5 @@
 import util from "util";
+import { ENV } from "../config/env";
 
 type LogLevel = "info" | "warn" | "error";
 type LogMeta = Record<string, unknown>;
@@ -68,7 +69,7 @@ const sanitize = (
     return {
       name: value.name,
       message: redactString(value.message),
-      ...(process.env.NODE_ENV !== "production" && value.stack
+      ...(ENV.NODE_ENV !== "production" && value.stack
         ? {
             stack: redactString(value.stack),
           }
@@ -161,7 +162,7 @@ export const logger = {
   },
 
   debug(message: string, meta?: unknown): void {
-    if (process.env.NODE_ENV !== "production") {
+    if (ENV.NODE_ENV !== "production") {
       write("info", message, meta);
     }
   },

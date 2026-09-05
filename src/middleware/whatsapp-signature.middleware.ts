@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { Request, Response, NextFunction } from "express";
+import { ENV } from "../config/env";
 
 type RawBodyRequest = Request & {
   rawBody?: Buffer;
@@ -10,7 +11,7 @@ export const verifyWhatsAppSignature = (
   res: Response,
   next: NextFunction
 ): void => {
-  const appSecret = process.env.META_APP_SECRET;
+  const appSecret = ENV.META_APP_SECRET;;
 
   if (!appSecret) {
     /*

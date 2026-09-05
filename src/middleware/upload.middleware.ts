@@ -2,10 +2,10 @@ import multer, { FileFilterCallback } from "multer";
 import path from "path";
 import fs from "fs";
 import { Request } from "express";
+import { ENV } from "../config/env";
 
-const uploadsDir = process.env.UPLOADS_DIR || "./uploads";
+const uploadsDir = ENV.UPLOADS_DIR;
 
-// Ensure upload directory exists
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
@@ -32,11 +32,10 @@ const memoryStorage = multer.memoryStorage();
 
 /* ---------------- LIMITS ---------------- */
 
-export const MAX_FILE_SIZE =
-  Number(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024;
+export const MAX_FILE_SIZE = ENV.MAX_FILE_SIZE;
 
 export const MAX_CATALOG_FILE_SIZE =
-  Number(process.env.MAX_CATALOG_FILE_SIZE) || 15 * 1024 * 1024;
+  ENV.MAX_CATALOG_FILE_SIZE;
 
 /* ---------------- FILE TYPES ---------------- */
 

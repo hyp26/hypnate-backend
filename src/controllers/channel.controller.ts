@@ -17,7 +17,7 @@ import {
    CONSTANTS
 ---------------------------------------------------- */
 
-const IS_PROD = process.env.NODE_ENV === "production";
+const IS_PROD = ENV.NODE_ENV === "production";
 
 const OAUTH_STATE_MAX_AGE = 10 * 60 * 1000; // 10 minutes
 

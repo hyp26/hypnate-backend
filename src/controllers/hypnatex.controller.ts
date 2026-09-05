@@ -3,9 +3,10 @@ import axios from "axios";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
 import { logger } from "../utils/logger";
+import { ENV } from "../config/env";
 
-const PYTHON_WORKER_URL = process.env.PYTHON_WORKER_URL as string;
-const INTERNAL_API_KEY  = process.env.INTERNAL_API_KEY as string; // ✅ matches internal routes
+const PYTHON_WORKER_URL = ENV.PYTHON_WORKER_URL as string;
+const INTERNAL_API_KEY  = ENV.INTERNAL_API_KEY as string;
 
 /* ─────────────────────────────────────────────
    HELPER — URL-safe slug

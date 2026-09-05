@@ -1,6 +1,5 @@
-import dotenv from "dotenv";
-dotenv.config();
-
+import { ENV } from "./config/env";
+import { verifyRequestOrigin } from "./middleware/origin.middleware";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -56,36 +55,62 @@ app.set("trust proxy", 1);
 
 /* ---------------- CORS ---------------- */
 
-const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const IS_PRODUCTION = ENV.NODE_ENV === "production";
 
-const allowedOrigins = [
+const normalizeOrigin = (value: string): string => {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return value.replace(/\/+$/, "");
+  }
+};
+
+const allowedOrigins = new Set<string>([
+  normalizeOrigin(ENV.FRONTEND_URL),
   "https://hypnate.in",
   "https://www.hypnate.in",
-];
+]);
 
 if (!IS_PRODUCTION) {
-  allowedOrigins.push(
+  [
     "http://localhost:3000",
     "http://localhost:5173",
     "http://127.0.0.1:3000",
-    "http://127.0.0.1:5173"
-  );
+    "http://127.0.0.1:5173",
+  ].forEach((origin) => {
+    allowedOrigins.add(origin);
+  });
 }
 
-const isAllowedOrigin = (origin?: string) => {
-  // Requests without an Origin header include server-to-server,
-  // health-check and some same-origin requests.
+const isAllowedOrigin = (origin?: string): boolean => {
   if (!origin) {
     return true;
   }
 
-  return allowedOrigins.includes(origin);
+  return allowedOrigins.has(origin);
 };
 
 /* ---------------- SECURITY ---------------- */
 
 app.use(helmet());
 app.disable("x-powered-by");
+
+/* ---------------- CORS ---------------- */
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (isAllowedOrigin(origin)) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
+    },
+    credentials: true,
+  })
+);
+
+app.use(verifyRequestOrigin);
 
 /* ---------------- PARSERS ---------------- */
 
@@ -517,12 +542,12 @@ io.on("connection", (socket) => {
 
 /* ---------------- START SERVER ---------------- */
 
-const PORT = Number(process.env.PORT) || 4000;
+const PORT = ENV.PORT;
 
 httpServer.listen(PORT, "0.0.0.0", () => {
   logger.info("HTTP server started", {
     port: PORT,
-    environment: process.env.NODE_ENV ?? "development",
+    environment: ENV.NODE_ENV ?? "development",
   });
 });
 

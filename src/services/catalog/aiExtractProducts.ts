@@ -1,5 +1,6 @@
 import Groq from "groq-sdk";
 import type { ParsedProductRow } from "./parseStructuredFile";
+import { ENV } from "../../config/env";
 
 // CHANGED: was constructed at module load (`const groq = new Groq(...)`),
 // which meant a missing GROQ_API_KEY crashed the entire server on startup —
@@ -10,13 +11,13 @@ import type { ParsedProductRow } from "./parseStructuredFile";
 let groqClient: Groq | null = null;
 
 function getGroqClient(): Groq {
-  if (!process.env.GROQ_API_KEY) {
+  if (!ENV.GROQ_API_KEY) {
     throw new Error(
       "AI catalog extraction isn't configured (GROQ_API_KEY is missing). CSV/XLSX uploads still work without it."
     );
   }
   if (!groqClient) {
-    groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    groqClient = new Groq({ apiKey: ENV.GROQ_API_KEY });
   }
   return groqClient;
 }
@@ -24,7 +25,7 @@ function getGroqClient(): Groq {
 // Llama 3.3 70B on Groq: strong enough for structured extraction, fast, and
 // comfortably inside the free tier for onboarding-volume traffic. Override
 // via env if you want to try a different open model later.
-const MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+const MODEL = ENV.GROQ_MODEL || "llama-3.3-70b-versatile";
 
 // Keep the output schema strict — this is the one place a model going
 // off-script (extra prose, markdown fences, invented fields) would break

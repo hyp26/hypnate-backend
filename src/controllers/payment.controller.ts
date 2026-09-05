@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { getSellerId } from "../services/seller.service";
+import { ENV } from "../config/env";
 
 // ─────────────────────────────────────────────
 // GET /api/payments
@@ -251,8 +252,8 @@ export const createPaymentLink = async (
       return res.status(400).json({ message: "Valid amount is required" });
     }
 
-    const keyId = process.env.RAZORPAY_KEY_ID;
-    const keySecret = process.env.RAZORPAY_KEY_SECRET;
+    const keyId = ENV.RAZORPAY_KEY_ID;
+    const keySecret = ENV.RAZORPAY_KEY_SECRET;
 
     if (!keyId || !keySecret) {
       return res.status(503).json({
@@ -273,7 +274,7 @@ export const createPaymentLink = async (
         sms: !!customerPhone,
         email: !!customerEmail,
       },
-      callback_url: process.env.FRONTEND_URL || "https://hypnate.in",
+      callback_url: ENV.FRONTEND_URL || "https://hypnate.in",
       callback_method: "get",
     };
 
