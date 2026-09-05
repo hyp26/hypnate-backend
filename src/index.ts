@@ -517,9 +517,15 @@ io.on("connection", (socket) => {
 
 /* ---------------- START SERVER ---------------- */
 
-const PORT = process.env.PORT || 4000;
+const PORT = Number(process.env.PORT) || 4000;
 
-logger.info("HTTP server started", {
-  port: PORT,
-  environment: process.env.NODE_ENV ?? "development",
+httpServer.listen(PORT, "0.0.0.0", () => {
+  logger.info("HTTP server started", {
+    port: PORT,
+    environment: process.env.NODE_ENV ?? "development",
+  });
+});
+
+httpServer.on("error", (err) => {
+  logger.error("HTTP server error", err);
 });
