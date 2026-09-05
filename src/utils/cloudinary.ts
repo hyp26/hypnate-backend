@@ -1,12 +1,12 @@
 import { v2 as cloudinary } from "cloudinary";
 import streamifier from "streamifier";
+import { ENV } from "../config/env";
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-  secure: true,
-});
+export default {
+  cloud_name: ENV.CLOUDINARY_CLOUD_NAME,
+  api_key: ENV.CLOUDINARY_API_KEY,
+  api_secret: ENV.CLOUDINARY_API_SECRET,
+};
 
 export function uploadBufferToCloudinary(buffer: Buffer, folder = "hypnate") {
   return new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {

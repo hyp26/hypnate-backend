@@ -5,6 +5,7 @@ import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
 import { encrypt } from "../services/crypto.service";
 import { logger } from "../utils/logger";
+import { ENV } from "../config/env";
 import {
   exchangeCodeForAccessToken,
   getBusinesses,
@@ -20,7 +21,7 @@ const IS_PROD = process.env.NODE_ENV === "production";
 
 const OAUTH_STATE_MAX_AGE = 10 * 60 * 1000; // 10 minutes
 
-const META_APP_SECRET = process.env.META_APP_SECRET;
+const META_APP_SECRET = ENV.META_APP_SECRET;
 
 if (!META_APP_SECRET) {
   throw new Error("META_APP_SECRET environment variable is missing");
@@ -183,13 +184,16 @@ export const connectTelegram = async (
 
     const { botToken } = req.body;
 
-    if (!botToken) {
+    if (
+      typeof botToken !== "string" ||
+      botToken.trim().length === 0
+    ) {
       return res.status(400).json({
         message: "Bot token required",
       });
     }
 
-    const WEBHOOK_BASE_URL = process.env.WEBHOOK_BASE_URL;
+    const WEBHOOK_BASE_URL = ENV.WEBHOOK_BASE_URL;
 
     if (!WEBHOOK_BASE_URL) {
       return res.status(500).json({
@@ -211,15 +215,37 @@ export const connectTelegram = async (
     const webhookUrl =
       `${WEBHOOK_BASE_URL}/api/webhooks/telegram/${sellerId}`;
 
-    // Register webhook.
-    await axios.get(
+    /*
+     * Generate a cryptographically secure secret for Telegram's
+     * X-Telegram-Bot-Api-Secret-Token header.
+     *
+     * This secret is NOT derived from sellerId and is never
+     * returned to the browser.
+     */
+    const webhookSecret = crypto
+      .randomBytes(32)
+      .toString("base64url");
+
+    /*
+     * Register the webhook with Telegram.
+     *
+     * Telegram will include this exact secret in the
+     * X-Telegram-Bot-Api-Secret-Token header on every
+     * webhook request.
+     */
+    const webhookResponse = await axios.post(
       `https://api.telegram.org/bot${botToken}/setWebhook`,
       {
-        params: {
-          url: webhookUrl,
-        },
+        url: webhookUrl,
+        secret_token: webhookSecret,
       }
     );
+
+    if (!webhookResponse.data?.ok) {
+      return res.status(502).json({
+        message: "Failed to register Telegram webhook",
+      });
+    }
 
     // Remove old Telegram connection.
     await prisma.channelConnection.deleteMany({
@@ -229,12 +255,18 @@ export const connectTelegram = async (
       },
     });
 
-    // Save encrypted Telegram bot token.
+    /*
+     * Save both credentials encrypted at rest.
+     *
+     * The webhook secret must never be stored in plaintext.
+     */
     await prisma.channelConnection.create({
       data: {
         sellerId,
         platform: "TELEGRAM",
         accessToken: encrypt(botToken),
+        webhookSecret: encrypt(webhookSecret),
+        webhookUrl,
         isActive: true,
       },
     });
@@ -247,7 +279,9 @@ export const connectTelegram = async (
       webhookUrl,
     });
   } catch (err) {
-    // Do not log Telegram API response bodies or credentials.
+    /*
+     * Do not log Telegram API response bodies or credentials.
+     */
     logger.error("Failed to connect Telegram", err);
 
     return res.status(500).json({
@@ -275,13 +309,13 @@ export const connectWhatsApp = async (
       });
     }
 
-    if (!process.env.META_APP_ID) {
+    if (!ENV.META_APP_ID) {
       return res.status(500).json({
         message: "WhatsApp integration is not configured",
       });
     }
 
-    if (!process.env.META_REDIRECT_URI) {
+    if (!ENV.META_REDIRECT_URI) {
       return res.status(500).json({
         message: "WhatsApp callback is not configured",
       });
@@ -311,8 +345,8 @@ export const connectWhatsApp = async (
     });
 
     const params = new URLSearchParams({
-      client_id: process.env.META_APP_ID,
-      redirect_uri: process.env.META_REDIRECT_URI,
+      client_id: ENV.META_APP_ID,
+      redirect_uri: ENV.META_REDIRECT_URI,
       state,
       scope: [
         "business_management",

@@ -9,6 +9,7 @@
     "start": "node dist/index.js",
     "migrate": "prisma migrate dev",
     "deploy:migrate": "prisma migrate deploy",
+    "migrate:encryption": "ts-node scripts/migrate-encryption.ts",
     "generate": "prisma generate",
     "seed:themes": "ts-node --project prisma/tsconfig.seed.json prisma/seed.themes.ts",
     "dev:infra": "docker compose up --build",

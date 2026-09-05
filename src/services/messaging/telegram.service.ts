@@ -44,7 +44,8 @@ export const sendTelegramMessage = async (
 
 export const setTelegramWebhook = async (
   sellerId: number,
-  webhookUrl: string
+  webhookUrl: string,
+  webhookSecret: string
 ) => {
   const botToken =
     await getBotToken(sellerId);
@@ -53,6 +54,7 @@ export const setTelegramWebhook = async (
     `https://api.telegram.org/bot${botToken}/setWebhook`,
     {
       url: webhookUrl,
+      secret_token: webhookSecret,
     }
   );
 

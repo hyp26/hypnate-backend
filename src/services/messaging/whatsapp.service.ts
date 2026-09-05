@@ -1,9 +1,10 @@
 import axios from "axios";
 import prisma from "../../prisma/client";
 import { decrypt } from "../crypto.service";
+import { ENV } from "../../config/env";
 
 const GRAPH_VERSION =
-  process.env.META_GRAPH_VERSION || "v25.0";
+  ENV.META_GRAPH_VERSION || "v25.0";
 
 const GRAPH_URL =
   `https://graph.facebook.com/${GRAPH_VERSION}`;
@@ -27,9 +28,9 @@ export const exchangeCodeForAccessToken = async (
     `${GRAPH_URL}/oauth/access_token`,
     {
       params: {
-        client_id: process.env.META_APP_ID,
-        client_secret: process.env.META_APP_SECRET,
-        redirect_uri: process.env.META_REDIRECT_URI,
+        client_id: ENV.META_APP_ID,
+        client_secret: ENV.META_APP_SECRET,
+        redirect_uri: ENV.META_REDIRECT_URI,
         code,
       },
     }

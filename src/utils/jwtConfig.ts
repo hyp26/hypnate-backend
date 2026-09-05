@@ -9,9 +9,9 @@ import { ENV } from "../config/env";
 // Single source of truth
 export const JWT_SECRET = ENV.JWT_SECRET;
 
-export const TOKEN_EXPIRY = process.env.TOKEN_EXPIRY ?? "7d";
+export const TOKEN_EXPIRY = ENV.TOKEN_EXPIRY;
 
-export const SALT_ROUNDS = Number(process.env.SALT_ROUNDS) || 10;
+export const SALT_ROUNDS = ENV.SALT_ROUNDS;
 
 /**
  * Converts strings like:

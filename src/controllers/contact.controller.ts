@@ -1,17 +1,17 @@
 import { Request, Response, NextFunction } from "express";
 import { Resend } from "resend";
-
 import prisma from "../prisma/client";
 import { contactSchema } from "../schemas/contact.schema";
 import { logger } from "../utils/logger";
+import { ENV } from "../config/env";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const resend = new Resend(ENV.RESEND_API_KEY);
 
 const CONTACT_NOTIFICATION_EMAIL =
-  process.env.CONTACT_NOTIFICATION_EMAIL;
+  ENV.CONTACT_NOTIFICATION_EMAIL;
 
 const CONTACT_FROM_EMAIL =
-  process.env.CONTACT_FROM_EMAIL ||
+  ENV.CONTACT_FROM_EMAIL ||
   "Hypnate <noreply@hypnate.in>";
 
 export const submitContact = async (

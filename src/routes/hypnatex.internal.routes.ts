@@ -1,24 +1,55 @@
 import { Router, Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
+import crypto from "crypto";
+import { ENV } from "../config/env";
 
 const router = Router();
-const INTERNAL_KEY = process.env.INTERNAL_API_KEY;
+
+const VALID_STATUSES = [
+  "PENDING",
+  "PROCESSING",
+  "DONE",
+  "FAILED",
+] as const;
+
+const INTERNAL_KEY = ENV.INTERNAL_API_KEY;
 
 /* --------------------------------------------------
    Guard — only Python worker can call these routes
 -------------------------------------------------- */
-const internalOnly = (req: Request, res: Response, next: NextFunction) => {
-  const key = req.headers["x-internal-key"];
-  if (!INTERNAL_KEY || key !== INTERNAL_KEY) {
-    return res.status(403).json({ message: "Forbidden" });
+const internalOnly = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  const supplied = req.headers["x-internal-key"];
+
+  if (typeof supplied !== "string" || !INTERNAL_KEY) {
+    return res.status(403).json({
+      message: "Forbidden",
+    });
   }
+
+  const suppliedBuffer = Buffer.from(supplied, "utf8");
+  const expectedBuffer = Buffer.from(
+    INTERNAL_KEY,
+    "utf8"
+  );
+
+  if (
+    suppliedBuffer.length !== expectedBuffer.length ||
+    !crypto.timingSafeEqual(
+      suppliedBuffer,
+      expectedBuffer
+    )
+  ) {
+    return res.status(403).json({
+      message: "Forbidden",
+    });
+  }
+
   return next();
 };
-
-const VALID_STATUSES = [
-  "QUEUED", "GENERATING_PAGES", "UPLOADING_PRODUCTS",
-  "APPLYING_THEME", "DEPLOYING", "DONE", "FAILED",
-];
 
 /* --------------------------------------------------
    PATCH /api/hypnate-x/internal/job/:jobId

@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { ENV } from "../../../config/env";
 
 export const verifyWebhook = (
   req: Request,
@@ -10,7 +11,7 @@ export const verifyWebhook = (
 
   if (
     mode === "subscribe" &&
-    token === process.env.WHATSAPP_VERIFY_TOKEN
+    token === ENV.WHATSAPP_VERIFY_TOKEN
   ) {
     return res.status(200).send(challenge);
   }
