@@ -138,10 +138,21 @@ export const revokeRefreshSession = async (
    COOKIES
 ---------------------------------------------------- */
 
+/**
+ * Auth cookies must work when the browser frontend and API are on
+ * different origins. In production, the frontend may be hosted at
+ * hypnate.in while the API is hosted on another origin/subdomain.
+ *
+ * SameSite=None is required for credentialed cross-site requests.
+ * Secure is mandatory when SameSite=None is used, so production
+ * cookies are always HTTPS-only.
+ *
+ * In local development we keep SameSite=Lax so HTTP localhost works.
+ */
 const baseCookieOptions: CookieOptions = {
   httpOnly: true,
   secure: IS_PROD,
-  sameSite: "lax",
+  sameSite: IS_PROD ? "none" : "lax",
 };
 
 const setAuthCookies = (
@@ -164,10 +175,12 @@ const setAuthCookies = (
 
 const clearAuthCookies = (res: Response) => {
   res.clearCookie("accessToken", {
+    ...baseCookieOptions,
     path: "/",
   });
 
   res.clearCookie("refreshToken", {
+    ...baseCookieOptions,
     path: "/api/auth/refresh",
   });
 };
