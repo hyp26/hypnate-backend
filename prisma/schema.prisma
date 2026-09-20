@@ -139,6 +139,7 @@ model Seller {
   onboardedAt  DateTime?
   industry     String?
   businessSize String?
+  selectedPlan String?
 
   paymentGateway   String?
   gatewayKeyId     String?
