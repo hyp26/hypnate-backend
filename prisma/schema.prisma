@@ -78,22 +78,22 @@ enum NotificationType {
 // ─────────────────────────────────────────────
 
 model User {
-  id           Int     @id @default(autoincrement())
-  name         String
-  email        String  @unique
-  password     String?
-  authProvider String  @default("LOCAL")
-  googleId     String? @unique
-  facebookId   String? @unique
-  role         Role    @default(SELLER)
-  emailVerified            Boolean   @default(false)
-  verificationToken        String?   @unique
-  verificationTokenExpiry  DateTime?
+  id                      Int       @id @default(autoincrement())
+  name                    String
+  email                   String    @unique
+  password                String?
+  authProvider            String    @default("LOCAL")
+  googleId                String?   @unique
+  facebookId              String?   @unique
+  role                    Role      @default(SELLER)
+  emailVerified           Boolean   @default(false)
+  verificationToken       String?   @unique
+  verificationTokenExpiry DateTime?
 
   sellerId Int?
   seller   Seller? @relation(fields: [sellerId], references: [id])
 
-  passwordResets PasswordReset[]
+  passwordResets  PasswordReset[]
   refreshSessions RefreshSession[]
 
   assignedConversations Conversation[] @relation("ConversationAssignee")
@@ -112,12 +112,12 @@ model PasswordReset {
 }
 
 model RefreshSession {
-  id        Int      @id @default(autoincrement())
+  id        Int       @id @default(autoincrement())
   userId    Int
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
   revokedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -125,8 +125,6 @@ model RefreshSession {
   @@index([expiresAt])
   @@index([revokedAt])
 }
-
-
 
 // ─────────────────────────────────────────────
 // SELLER
@@ -285,11 +283,11 @@ model Message {
 
   createdAt DateTime @default(now())
 
-  @@index([conversationId])
-  @@index([conversationId, createdAt])
   // Prevent duplicate processing of the same provider message.
   // PostgreSQL permits multiple NULL values in a unique index.
   @@unique([conversationId, externalMessageId])
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
 }
 
 // ─────────────────────────────────────────────
@@ -562,14 +560,14 @@ model BuildJob {
 // ─────────────────────────────────────────────
 
 model ContactSubmission {
-  id        Int      @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  name      String
-  email     String
-  phone     String?
-  company   String?
-  subject   String?
-  message   String
+  name    String
+  email   String
+  phone   String?
+  company String?
+  subject String?
+  message String
 
   createdAt DateTime @default(now())
 
