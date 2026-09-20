@@ -6,8 +6,11 @@ import {
   deleteNotification,
 } from "../controllers/notification.controller";
 import { verifyToken } from "../middleware/authMiddleware";
+import { requirePlanFeature } from "../middleware/plan.middleware";
 
 const router = Router();
+
+router.use(verifyToken, requirePlanFeature("commerceWorkspace"));
 
 // ── Notifications ──
 router.get("/", verifyToken, getNotifications);

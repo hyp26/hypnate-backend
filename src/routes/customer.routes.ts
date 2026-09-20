@@ -7,13 +7,16 @@ import {
   deleteCustomer,
 } from "../controllers/customer.controller";
 import { verifyToken } from "../middleware/authMiddleware";
+import { requirePlanFeature } from "../middleware/plan.middleware";
 
 const router = Router();
+
+router.use(verifyToken, requirePlanFeature("commerceWorkspace"));
 
 /**
  * /api/customers
  */
-router.get("/", verifyToken, getCustomers);
+router.get("/", verifyToken, requirePlanFeature("commerceWorkspace"), getCustomers);
 
 // ⚠️ /stats MUST come before /:id
 // Otherwise Express matches "stats" as the :id param

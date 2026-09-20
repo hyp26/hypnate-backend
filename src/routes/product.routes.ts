@@ -9,11 +9,12 @@ import {
   getLowStockProducts,
 } from "../controllers/product.controller";
 import { verifyToken } from "../middleware/authMiddleware";
+import { requirePlanFeature } from "../middleware/plan.middleware";
 
 const router = Router();
 
 // protect all product routes
-router.use(verifyToken);
+router.use(verifyToken, requirePlanFeature("commerceWorkspace"));
 
 router.get("/low-stock", getLowStockProducts);
 

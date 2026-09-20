@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import multer from "multer";
 import { verifyToken } from "../middleware/authMiddleware";
+import { requirePlanFeature } from "../middleware/plan.middleware";
 import { cloudUpload } from "../middleware/upload.middleware";
 import { uploadBufferToCloudinary } from "../utils/cloudinary";
 import {
@@ -10,7 +11,7 @@ import {
 
 const router = Router();
 
-router.use(verifyToken);
+router.use(verifyToken, requirePlanFeature("commerceWorkspace"));
 
 router.post(
   "/",

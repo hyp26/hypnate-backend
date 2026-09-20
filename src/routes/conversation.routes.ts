@@ -10,9 +10,12 @@ import {
 } from "../controllers/conversation.controller";
 
 import { verifyToken } from "../middleware/authMiddleware";
+import { requirePlanFeature } from "../middleware/plan.middleware";
 import { assignConversation } from "../controllers/assign.controller";
 
 const router = Router();
+
+router.use(verifyToken, requirePlanFeature("commerceWorkspace"));
 
 // ─────────────────────────────────────────────
 // STATS
@@ -30,6 +33,7 @@ router.get(
 router.get(
   "/",
   verifyToken,
+  requirePlanFeature("commerceWorkspace"),
   getConversations
 );
 

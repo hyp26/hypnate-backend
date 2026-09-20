@@ -1,139 +1,91 @@
-import { Request, Response, NextFunction, RequestHandler } from "express";
-import jwt from "jsonwebtoken";
-import { ENV } from "../config/env";
-
-const JWT_SECRET = ENV.JWT_SECRET;
-
-/* ----------------------------------------------------
-   TYPES
----------------------------------------------------- */
-export interface JwtUser {
-  id: number;
-  role: "ADMIN" | "SELLER";
-  sellerId?: number | null;
-}
+import { Request, Response, NextFunction } from "express";
+import jwt, { JwtPayload } from "jsonwebtoken";
+import { JWT_SECRET } from "../utils/jwtConfig";
 
 export interface AuthRequest extends Request {
-  user?: JwtUser;
+  user?: {
+    id: number;
+    role: string;
+    sellerId: number | null;
+    email?: string;
+  };
+  userId?: number;
 }
 
-/* ----------------------------------------------------
-   VERIFY TOKEN (reads from httpOnly cookie)
----------------------------------------------------- */
-export const verifyToken: RequestHandler = (req, res, next) => {
-  const authReq = req as AuthRequest;
+interface AccessTokenPayload extends JwtPayload {
+  id: number;
+  role: string;
+  sellerId: number | null;
+}
 
-  const token = authReq.cookies?.accessToken;
+function getAccessToken(req: Request): string | null {
+  const cookieToken = req.cookies?.accessToken;
 
-  if (!token) {
-    return res.status(401).json({
-      message: "Not authenticated",
-    });
+  if (typeof cookieToken === "string" && cookieToken.trim()) {
+    return cookieToken;
   }
 
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET) as JwtUser;
+  const authorization = req.headers.authorization;
 
-    authReq.user = decoded;
+  if (authorization?.startsWith("Bearer ")) {
+    const bearerToken = authorization.slice("Bearer ".length).trim();
 
-    return next();
-  } catch (err) {
-    if (err instanceof jwt.TokenExpiredError) {
-      return res.status(401).json({
-        message: "Token expired",
-        code: "TOKEN_EXPIRED",
-      });
+    if (bearerToken) {
+      return bearerToken;
     }
-
-    return res.status(401).json({
-      message: "Invalid token",
-    });
-  }
-};
-
-/* ----------------------------------------------------
-   REQUIRE ROLE
----------------------------------------------------- */
-export const requireRole = (...roles: Array<"ADMIN" | "SELLER">) => {
-  return (req: AuthRequest, res: Response, next: NextFunction) => {
-    if (!req.user) {
-      return res.status(401).json({
-        message: "Not authenticated",
-      });
-    }
-
-    if (!roles.includes(req.user.role)) {
-      return res.status(403).json({
-        message: "Forbidden: insufficient permissions",
-      });
-    }
-
-    return next();
-  };
-};
-
-/* ----------------------------------------------------
-   OPTIONAL AUTH
----------------------------------------------------- */
-export const optionalAuth = (
-  req: AuthRequest,
-  _res: Response,
-  next: NextFunction
-) => {
-  const token = req.cookies?.accessToken;
-
-  if (!token) {
-    return next();
   }
 
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET) as JwtUser;
-    req.user = decoded;
-  } catch {
-    // Continue as guest
-  }
+  return null;
+}
 
-  return next();
-};
-
-/* ----------------------------------------------------
-   SELLER GUARD
----------------------------------------------------- */
-export const sellerGuard = (
+export const verifyToken = (
   req: AuthRequest,
   res: Response,
   next: NextFunction
-) => {
-  if (!req.user) {
-    return res.status(401).json({
-      message: "Not authenticated",
+): void => {
+  const token = getAccessToken(req);
+
+  if (!token) {
+    res.status(401).json({
+      message: "Authentication required",
+    });
+    return;
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    if (
+      typeof decoded !== "object" ||
+      decoded === null ||
+      typeof decoded.id !== "number" ||
+      typeof decoded.role !== "string"
+    ) {
+      res.status(401).json({
+        message: "Invalid authentication token",
+      });
+      return;
+    }
+
+    const payload = decoded as AccessTokenPayload;
+
+    req.user = {
+      id: payload.id,
+      role: payload.role,
+      sellerId:
+        typeof payload.sellerId === "number"
+          ? payload.sellerId
+          : null,
+    };
+
+    req.userId = payload.id;
+
+    next();
+  } catch {
+    res.status(401).json({
+      message: "Invalid or expired authentication token",
     });
   }
-
-  // Admins bypass seller checks
-  if (req.user.role === "ADMIN") {
-    return next();
-  }
-
-  let requestedSellerId: number | undefined;
-
-  if (req.params?.sellerId) {
-    requestedSellerId = Number(req.params.sellerId);
-  } else if (req.body?.sellerId) {
-    requestedSellerId = Number(req.body.sellerId);
-  } else if (req.query?.sellerId) {
-    requestedSellerId = Number(req.query.sellerId);
-  }
-
-  if (
-    requestedSellerId !== undefined &&
-    !Number.isNaN(requestedSellerId) &&
-    req.user.sellerId !== requestedSellerId
-  ) {
-    return res.status(403).json({
-      message: "Forbidden: not your resource",
-    });
-  }
-
-  return next();
 };
+
+export default verifyToken;

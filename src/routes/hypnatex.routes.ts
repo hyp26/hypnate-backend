@@ -1,5 +1,6 @@
 import { Router, RequestHandler } from "express";
 import { verifyToken } from "../middleware/authMiddleware";
+import { requirePlanFeature } from "../middleware/plan.middleware";
 import {
   startBuild,
   getBuildStatus,
@@ -22,16 +23,16 @@ router.get("/themes", listThemes as RequestHandler);
 router.use(verifyToken as RequestHandler);
 
 // Start a new AI website build
-router.post("/build", startBuild as RequestHandler);
+router.post("/build", requirePlanFeature("hypnateX") as RequestHandler, startBuild as RequestHandler);
 
 // Poll build job status (frontend polls this every 3s)
-router.get("/status/:jobId", getBuildStatus as RequestHandler);
+router.get("/status/:jobId", requirePlanFeature("hypnateX") as RequestHandler, getBuildStatus as RequestHandler);
 
 // Get merchant's current store
-router.get("/store", getMyStore as RequestHandler);
+router.get("/store", requirePlanFeature("hypnateX") as RequestHandler, getMyStore as RequestHandler);
 
 // Update store settings (name, custom domain, etc.)
-router.put("/store", updateStore as RequestHandler);
+router.put("/store", requirePlanFeature("hypnateX") as RequestHandler, updateStore as RequestHandler);
 
 
 export default router;

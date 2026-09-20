@@ -141,10 +141,7 @@ export const revokeRefreshSession = async (
 const baseCookieOptions: CookieOptions = {
   httpOnly: true,
   secure: IS_PROD,
-  // The SPA and API are commonly deployed on different sites. Production
-  // therefore needs SameSite=None so browser fetch requests can carry the
-  // auth cookies cross-site. Local development remains Lax.
-  sameSite: IS_PROD ? "none" : "lax",
+  sameSite: "lax",
 };
 
 const setAuthCookies = (
@@ -167,12 +164,10 @@ const setAuthCookies = (
 
 const clearAuthCookies = (res: Response) => {
   res.clearCookie("accessToken", {
-    ...baseCookieOptions,
     path: "/",
   });
 
   res.clearCookie("refreshToken", {
-    ...baseCookieOptions,
     path: "/api/auth/refresh",
   });
 };
@@ -282,10 +277,10 @@ export const register = async (
       : String(selectedPlan).toLowerCase().trim();
     const allowedPlans = new Set(["starter", "pro", "business"]);
 
-    if (normalizedPlan && !allowedPlans.has(normalizedPlan)) {
+    if (!normalizedPlan || !allowedPlans.has(normalizedPlan)) {
       return res.status(400).json({
-        message: "Invalid selected plan",
-        code: "INVALID_PLAN",
+        message: "Please select a valid plan before creating your account.",
+        code: "PLAN_REQUIRED",
       });
     }
 

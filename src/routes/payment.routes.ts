@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { verifyToken } from "../middleware/authMiddleware";
+import { requirePlanFeature } from "../middleware/plan.middleware";
 import {
   getPayments,
   getPaymentStats,
@@ -9,6 +10,8 @@ import {
 
 const router = Router();
 
+router.use(verifyToken, requirePlanFeature("commerceWorkspace"));
+
 // ── Stats first (before /:id patterns) ──
 router.get("/stats", verifyToken, getPaymentStats);
 router.get("/export", verifyToken, exportPayments);
@@ -17,6 +20,6 @@ router.get("/export", verifyToken, exportPayments);
 router.get("/", verifyToken, getPayments);
 
 // ── Create payment link ──
-router.post("/link", verifyToken, createPaymentLink);
+router.post("/link", requirePlanFeature("paymentLinks"), createPaymentLink);
 
 export default router;

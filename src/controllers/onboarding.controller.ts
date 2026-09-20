@@ -30,6 +30,7 @@ export const saveBusinessInfo = async (
       size,
       phone,
       gstNumber,
+      selectedPlan,
     } = req.body;
 
     if (
@@ -42,10 +43,36 @@ export const saveBusinessInfo = async (
       });
     }
 
+    const currentSeller = await prisma.seller.findUnique({
+      where: { id: sellerId },
+      select: { selectedPlan: true },
+    });
+
+    const normalizedPlan = selectedPlan == null || selectedPlan === ""
+      ? null
+      : String(selectedPlan).toLowerCase().trim();
+    const allowedPlans = new Set(["starter", "pro", "business"]);
+
+    if (normalizedPlan && !allowedPlans.has(normalizedPlan)) {
+      return res.status(400).json({
+        message: "Invalid selected plan",
+        code: "INVALID_PLAN",
+      });
+    }
+
+    const effectivePlan = normalizedPlan || currentSeller?.selectedPlan || null;
+    if (!effectivePlan) {
+      return res.status(400).json({
+        message: "Please select a plan before continuing setup.",
+        code: "PLAN_REQUIRED",
+      });
+    }
+
     const seller = await prisma.seller.update({
       where: { id: sellerId },
       data: {
         businessName: businessName.trim(),
+        selectedPlan: effectivePlan,
 
         ...(phone &&
           typeof phone === "string" && {

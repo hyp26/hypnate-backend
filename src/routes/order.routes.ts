@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { verifyToken } from "../middleware/authMiddleware";
+import { requirePlanFeature } from "../middleware/plan.middleware";
 import {
   createOrder,
   getOrders,
@@ -21,11 +22,13 @@ const authHandler =
   (req: Request, res: Response, next: NextFunction) =>
     Promise.resolve(fn(req, res, next)).catch(next);
 
+router.use(verifyToken, requirePlanFeature("commerceWorkspace"));
+
 // --------------------------------------------------
 // Orders
 // --------------------------------------------------
 
-router.post("/", verifyToken, authHandler(createOrder));
+router.post("/", verifyToken, requirePlanFeature("commerceWorkspace"), authHandler(createOrder));
 router.get("/", verifyToken, authHandler(getOrders));
 
 // --------------------------------------------------
