@@ -634,6 +634,7 @@ export const getOnboardingData = async (
         gstNumber: true,
         industry: true,
         businessSize: true,
+        selectedPlan: true,
       },
     });
 
@@ -649,6 +650,7 @@ export const getOnboardingData = async (
       gstNumber: seller.gstNumber || "",
       industry: seller.industry || "",
       size: seller.businessSize || "",
+      selectedPlan: seller.selectedPlan || null,
     });
   } catch (err) {
     next(err);

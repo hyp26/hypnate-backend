@@ -138,20 +138,12 @@ export const revokeRefreshSession = async (
    COOKIES
 ---------------------------------------------------- */
 
-/**
- * Auth cookies must work when the browser frontend and API are on
- * different origins. In production, the frontend may be hosted at
- * hypnate.in while the API is hosted on another origin/subdomain.
- *
- * SameSite=None is required for credentialed cross-site requests.
- * Secure is mandatory when SameSite=None is used, so production
- * cookies are always HTTPS-only.
- *
- * In local development we keep SameSite=Lax so HTTP localhost works.
- */
 const baseCookieOptions: CookieOptions = {
   httpOnly: true,
   secure: IS_PROD,
+  // The SPA and API are commonly deployed on different sites. Production
+  // therefore needs SameSite=None so browser fetch requests can carry the
+  // auth cookies cross-site. Local development remains Lax.
   sameSite: IS_PROD ? "none" : "lax",
 };
 
@@ -258,6 +250,7 @@ export const register = async (
       password,
       businessName,
       phone,
+      selectedPlan,
     } = req.body;
 
     if (!name || !email || !password) {
@@ -283,6 +276,18 @@ export const register = async (
     // Public registration can ONLY create SELLER accounts.
     // ADMIN accounts must never be created through this endpoint.
     const userRole = "SELLER";
+
+    const normalizedPlan = selectedPlan == null || selectedPlan === ""
+      ? null
+      : String(selectedPlan).toLowerCase().trim();
+    const allowedPlans = new Set(["starter", "pro", "business"]);
+
+    if (normalizedPlan && !allowedPlans.has(normalizedPlan)) {
+      return res.status(400).json({
+        message: "Invalid selected plan",
+        code: "INVALID_PLAN",
+      });
+    }
 
     if (!businessName || !phone) {
       return res.status(400).json({
@@ -313,6 +318,7 @@ export const register = async (
       data: {
         businessName,
         phone,
+        selectedPlan: normalizedPlan,
       },
     });
 
