@@ -6,6 +6,12 @@ import Papa from "papaparse";
 import { parseStructuredCatalog } from "../services/catalog/parseStructuredFile";
 import { extractTextFromFile } from "../services/catalog/extractText";
 import { extractProductsWithAI } from "../services/catalog/aiExtractProducts";
+import {
+  normalizePlan,
+  hasPlanChannel,
+  requiredPlanForChannel,
+  type PlanChannel,
+} from "../config/planEntitlements";
 
 /* ─────────────────────────────────────────────
    POST /api/onboarding/business
@@ -515,6 +521,31 @@ export const saveChannels = async (
       return res.status(400).json({
         message: "At least one channel is required",
       });
+    }
+
+    const seller = await prisma.seller.findUnique({
+      where: { id: sellerId },
+      select: { selectedPlan: true },
+    });
+    const currentPlan = normalizePlan(seller?.selectedPlan);
+
+    if (!currentPlan) {
+      return res.status(403).json({
+        message: "Select a plan before connecting channels.",
+        code: "PLAN_REQUIRED",
+      });
+    }
+
+    for (const requested of requestedChannels) {
+      if ((requested === "whatsapp" || requested === "telegram" || requested === "instagram" || requested === "facebook") && !hasPlanChannel(currentPlan, requested as PlanChannel)) {
+        return res.status(403).json({
+          message: `${requiredPlanForChannel(requested as PlanChannel)} plan or above is required for ${requested}.`,
+          code: "PLAN_UPGRADE_REQUIRED",
+          currentPlan,
+          requiredPlan: requiredPlanForChannel(requested as PlanChannel),
+          channel: requested,
+        });
+      }
     }
 
     /*
