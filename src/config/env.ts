@@ -225,6 +225,15 @@ const envSchema = z.object({
   RAZORPAY_KEY_ID: optionalString,
 
   RAZORPAY_KEY_SECRET: optionalString,
+
+  RAZORPAY_WEBHOOK_SECRET: optionalString,
+
+  RAZORPAY_PLAN_STARTER_MONTHLY: optionalString,
+  RAZORPAY_PLAN_PRO_MONTHLY: optionalString,
+  RAZORPAY_PLAN_BUSINESS_MONTHLY: optionalString,
+  RAZORPAY_PLAN_STARTER_YEARLY: optionalString,
+  RAZORPAY_PLAN_PRO_YEARLY: optionalString,
+  RAZORPAY_PLAN_BUSINESS_YEARLY: optionalString,
 });
 
 const parsed = envSchema.safeParse(process.env);

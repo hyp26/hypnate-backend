@@ -139,13 +139,23 @@ model Seller {
   onboardedAt  DateTime?
   industry     String?
   businessSize String?
-
-  // Signup/onboarding preference; does not grant product access.
+  // Plan selected during signup/onboarding. This alone does not grant access.
   selectedPlan String?
 
-  // Subscription state; only a successfully activated subscription may set this.
-  activePlan       String?
-  planActivatedAt  DateTime?
+  // 7-day product trial. No payment method is collected during the trial.
+  trialPlan      String?
+  trialStartedAt DateTime?
+  trialEndsAt    DateTime?
+  trialUsedAt    DateTime?
+
+  // Paid subscription entitlement. Set only after verified Razorpay payment/webhook.
+  activePlan             String?
+  planStatus             String?
+  planActivatedAt        DateTime?
+  planCurrentPeriodEnd   DateTime?
+  razorpaySubscriptionId String?   @unique
+  razorpayPlanId         String?
+  billingCycle           String?
 
   paymentGateway   String?
   gatewayKeyId     String?

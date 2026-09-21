@@ -1,7 +1,7 @@
 {
   "name": "hypnate-backend",
   "version": "1.0.0",
-  "description": "AI-powered e-commerce backend for Hypnate — built with Node.js, Express, and Prisma.",
+  "description": "AI-powered e-commerce backend for Hypnate \u2014 built with Node.js, Express, and Prisma.",
   "main": "dist/index.js",
   "scripts": {
     "dev": "nodemon src/index.ts",
@@ -15,7 +15,8 @@
     "dev:infra": "docker compose up --build",
     "down:infra": "docker compose down",
     "logs:backend": "docker compose logs -f backend",
-    "db:reset": "docker compose down -v && docker compose up --build -d"
+    "db:reset": "docker compose down -v && docker compose up --build -d",
+    "razorpay:plans": "ts-node scripts/create-razorpay-plans.ts"
   },
   "repository": {
     "type": "git",
