@@ -43,10 +43,10 @@ export const requirePlanFeature = (feature: PlanFeature) => async (
 
     const seller = await prisma.seller.findUnique({
       where: { id: sellerId },
-      select: { selectedPlan: true },
+      select: { activePlan: true },
     });
 
-    const currentPlan = normalizePlan(seller?.selectedPlan);
+    const currentPlan = normalizePlan(seller?.activePlan);
     const requiredPlan = requiredPlanForFeature(feature);
 
     if (!currentPlan) {

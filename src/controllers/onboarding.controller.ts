@@ -67,18 +67,12 @@ export const saveBusinessInfo = async (
     }
 
     const effectivePlan = normalizedPlan || currentSeller?.selectedPlan || null;
-    if (!effectivePlan) {
-      return res.status(400).json({
-        message: "Please select a plan before continuing setup.",
-        code: "PLAN_REQUIRED",
-      });
-    }
 
     const seller = await prisma.seller.update({
       where: { id: sellerId },
       data: {
         businessName: businessName.trim(),
-        selectedPlan: effectivePlan,
+        ...(effectivePlan ? { selectedPlan: effectivePlan } : {}),
 
         ...(phone &&
           typeof phone === "string" && {
@@ -525,9 +519,9 @@ export const saveChannels = async (
 
     const seller = await prisma.seller.findUnique({
       where: { id: sellerId },
-      select: { selectedPlan: true },
+      select: { activePlan: true },
     });
-    const currentPlan = normalizePlan(seller?.selectedPlan);
+    const currentPlan = normalizePlan(seller?.activePlan);
 
     if (!currentPlan) {
       return res.status(403).json({

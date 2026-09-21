@@ -139,7 +139,13 @@ model Seller {
   onboardedAt  DateTime?
   industry     String?
   businessSize String?
+
+  // Signup/onboarding preference; does not grant product access.
   selectedPlan String?
+
+  // Subscription state; only a successfully activated subscription may set this.
+  activePlan       String?
+  planActivatedAt  DateTime?
 
   paymentGateway   String?
   gatewayKeyId     String?

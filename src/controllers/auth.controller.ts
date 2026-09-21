@@ -141,7 +141,10 @@ export const revokeRefreshSession = async (
 const baseCookieOptions: CookieOptions = {
   httpOnly: true,
   secure: IS_PROD,
-  sameSite: "lax",
+  // Frontend and API are deployed on different sites in production
+  // (e.g. hypnate.in -> the Render API), so browser auth cookies must
+  // explicitly allow cross-site XHR/fetch requests.
+  sameSite: IS_PROD ? "none" : "lax",
 };
 
 const setAuthCookies = (
@@ -277,10 +280,10 @@ export const register = async (
       : String(selectedPlan).toLowerCase().trim();
     const allowedPlans = new Set(["starter", "pro", "business"]);
 
-    if (!normalizedPlan || !allowedPlans.has(normalizedPlan)) {
+    if (normalizedPlan && !allowedPlans.has(normalizedPlan)) {
       return res.status(400).json({
-        message: "Please select a valid plan before creating your account.",
-        code: "PLAN_REQUIRED",
+        message: "Invalid selected plan",
+        code: "INVALID_PLAN",
       });
     }
 
