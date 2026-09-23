@@ -3,7 +3,7 @@ import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
 import { encrypt } from "../services/crypto.service";
 import Papa from "papaparse";
-import { parseStructuredCatalog } from "../services/catalog/parseStructuredFile";
+import * as XLSX from "xlsx";
 import { extractTextFromFile } from "../services/catalog/extractText";
 import { extractProductsWithAI } from "../services/catalog/aiExtractProducts";
 import {
@@ -36,7 +36,6 @@ export const saveBusinessInfo = async (
       size,
       phone,
       gstNumber,
-      selectedPlan,
     } = req.body;
 
     if (
@@ -51,28 +50,28 @@ export const saveBusinessInfo = async (
 
     const currentSeller = await prisma.seller.findUnique({
       where: { id: sellerId },
-      select: { selectedPlan: true },
+      select: {
+        selectedPlan: true,
+        trialPlan: true,
+        trialStartedAt: true,
+        trialEndsAt: true,
+      },
     });
 
-    const normalizedPlan = selectedPlan == null || selectedPlan === ""
-      ? null
-      : String(selectedPlan).toLowerCase().trim();
-    const allowedPlans = new Set(["starter", "pro", "business"]);
-
-    if (normalizedPlan && !allowedPlans.has(normalizedPlan)) {
-      return res.status(400).json({
-        message: "Invalid selected plan",
-        code: "INVALID_PLAN",
-      });
-    }
-
-    const effectivePlan = normalizedPlan || currentSeller?.selectedPlan || null;
+    // Onboarding never lets a merchant choose a paid trial tier.
+    const trialStartedAt = currentSeller?.trialStartedAt ?? new Date();
+    const trialEndsAt =
+      currentSeller?.trialEndsAt ??
+      new Date(trialStartedAt.getTime() + 7 * 24 * 60 * 60 * 1000);
 
     const seller = await prisma.seller.update({
       where: { id: sellerId },
       data: {
         businessName: businessName.trim(),
-        ...(effectivePlan ? { selectedPlan: effectivePlan } : {}),
+        selectedPlan: "starter",
+        trialPlan: "starter",
+        trialStartedAt,
+        trialEndsAt,
 
         ...(phone &&
           typeof phone === "string" && {
@@ -258,11 +257,73 @@ export const uploadCatalog = async (
    text extraction + AI product extraction.
    ───────────────────────────────────────────── */
 
-const STRUCTURED_MIME = new Set([
-  "text/csv",
-  "application/vnd.ms-excel",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-]);
+
+
+const normalizeCatalogHeader = (value: unknown) =>
+  String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+
+const parseStructuredCatalogFromBuffer = (
+  buffer: Buffer,
+  extension: string
+): Array<{
+  name: string;
+  price: number;
+  description?: string | null;
+  category?: string | null;
+  stock?: number;
+}> => {
+  let rows: Record<string, unknown>[] = [];
+
+  if (extension === "csv") {
+    const parsed = Papa.parse<Record<string, unknown>>(buffer.toString("utf8"), {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: normalizeCatalogHeader,
+    });
+    rows = parsed.data;
+  } else {
+    const workbook = XLSX.read(buffer, { type: "buffer", raw: false, cellDates: false });
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) continue;
+      rows.push(...XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+        defval: "",
+        raw: false,
+      }));
+    }
+  }
+
+  return rows.flatMap((row) => {
+    const normalized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(row)) {
+      normalized[normalizeCatalogHeader(key)] = value;
+    }
+
+    const name = String(
+      normalized.name ?? normalized.product_name ?? normalized.product ?? ""
+    ).trim();
+    const rawPrice = normalized.price ?? normalized.selling_price ?? normalized.sale_price ?? normalized.amount;
+    const price = typeof rawPrice === "number"
+      ? rawPrice
+      : Number.parseFloat(String(rawPrice ?? "").replace(/[,₹$]/g, ""));
+
+    if (!name || !Number.isFinite(price) || price < 0) return [];
+
+    const rawStock = normalized.stock ?? normalized.quantity ?? normalized.inventory ?? "0";
+    const stock = Number.parseInt(String(rawStock), 10);
+
+    return [{
+      name,
+      price,
+      description: normalized.description != null ? String(normalized.description).trim() : null,
+      category: normalized.category != null ? String(normalized.category).trim() : null,
+      stock: Number.isFinite(stock) ? stock : 0,
+    }];
+  });
+};
 
 const MAX_PRODUCTS = 500;
 
@@ -288,8 +349,10 @@ export const uploadCatalogFile = async (
       });
     }
 
-    const rows = STRUCTURED_MIME.has(file.mimetype)
-      ? parseStructuredCatalog(file.buffer)
+    const extension = (file.originalname?.split(".").pop() || "").toLowerCase();
+
+    const rows = ["csv", "xls", "xlsx"].includes(extension)
+      ? parseStructuredCatalogFromBuffer(file.buffer, extension)
       : await (async () => {
           const text = await extractTextFromFile(
             file.buffer,
@@ -519,13 +582,35 @@ export const saveChannels = async (
 
     const seller = await prisma.seller.findUnique({
       where: { id: sellerId },
-      select: { activePlan: true },
+      select: {
+        activePlan: true,
+        planStatus: true,
+        planCurrentPeriodEnd: true,
+        trialPlan: true,
+        trialEndsAt: true,
+      },
     });
-    const currentPlan = normalizePlan(seller?.activePlan);
+
+    const now = new Date();
+    const activePlan = normalizePlan(seller?.activePlan);
+    const activePeriodEnd = seller?.planCurrentPeriodEnd
+      ? new Date(seller.planCurrentPeriodEnd)
+      : null;
+    const trialPlan = normalizePlan(seller?.trialPlan);
+    const trialEndsAt = seller?.trialEndsAt ? new Date(seller.trialEndsAt) : null;
+
+    const currentPlan =
+      activePlan &&
+      ["ACTIVE", "PENDING", "CANCELLED"].includes(String(seller?.planStatus || "").toUpperCase()) &&
+      (!activePeriodEnd || activePeriodEnd > now)
+        ? activePlan
+        : trialPlan && trialEndsAt && trialEndsAt > now
+          ? trialPlan
+          : null;
 
     if (!currentPlan) {
       return res.status(403).json({
-        message: "Select a plan before connecting channels.",
+        message: "Your free trial has ended. Choose a plan before connecting channels.",
         code: "PLAN_REQUIRED",
       });
     }

@@ -275,17 +275,13 @@ export const register = async (
     // ADMIN accounts must never be created through this endpoint.
     const userRole = "SELLER";
 
-    const normalizedPlan = selectedPlan == null || selectedPlan === ""
-      ? null
-      : String(selectedPlan).toLowerCase().trim();
-    const allowedPlans = new Set(["starter", "pro", "business"]);
-
-    if (normalizedPlan && !allowedPlans.has(normalizedPlan)) {
-      return res.status(400).json({
-        message: "Invalid selected plan",
-        code: "INVALID_PLAN",
-      });
-    }
+    // Every new merchant receives the same 7-day Starter trial.
+    // Older clients may still send selectedPlan; it is intentionally ignored.
+    const trialStartedAt = new Date();
+    const trialEndsAt = new Date(
+      trialStartedAt.getTime() + 7 * 24 * 60 * 60 * 1000
+    );
+    const trialPlan = "starter";
 
     if (!businessName || !phone) {
       return res.status(400).json({
@@ -316,7 +312,10 @@ export const register = async (
       data: {
         businessName,
         phone,
-        selectedPlan: normalizedPlan,
+        selectedPlan: trialPlan,
+        trialPlan,
+        trialStartedAt,
+        trialEndsAt,
       },
     });
 

@@ -43,15 +43,37 @@ export const requirePlanFeature = (feature: PlanFeature) => async (
 
     const seller = await prisma.seller.findUnique({
       where: { id: sellerId },
-      select: { activePlan: true },
+      select: {
+        activePlan: true,
+        planStatus: true,
+        planCurrentPeriodEnd: true,
+        trialPlan: true,
+        trialEndsAt: true,
+      },
     });
 
-    const currentPlan = normalizePlan(seller?.activePlan);
+    const now = new Date();
+    const paidPlan = normalizePlan(seller?.activePlan);
+    const paidPeriodEnd = seller?.planCurrentPeriodEnd
+      ? new Date(seller.planCurrentPeriodEnd)
+      : null;
+    const trialPlan = normalizePlan(seller?.trialPlan);
+    const trialEndsAt = seller?.trialEndsAt ? new Date(seller.trialEndsAt) : null;
+
+    const currentPlan =
+      paidPlan &&
+      ["ACTIVE", "PENDING", "CANCELLED"].includes(String(seller?.planStatus || "").toUpperCase()) &&
+      (!paidPeriodEnd || paidPeriodEnd > now)
+        ? paidPlan
+        : trialPlan && trialEndsAt && trialEndsAt > now
+          ? trialPlan
+          : null;
+
     const requiredPlan = requiredPlanForFeature(feature);
 
     if (!currentPlan) {
       return res.status(403).json({
-        message: `Select a plan before using this feature. ${PLAN_NAMES[requiredPlan]} or above is required.`,
+        message: `Your free trial has ended. ${PLAN_NAMES[requiredPlan]} or above is required.`,
         code: "PLAN_REQUIRED",
         requiredPlan,
       });

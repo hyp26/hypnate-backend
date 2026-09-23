@@ -1,92 +1,95 @@
 import Groq from "groq-sdk";
-import type { ParsedProductRow } from "./parseStructuredFile";
 import { ENV } from "../../config/env";
 
-// CHANGED: was constructed at module load (`const groq = new Groq(...)`),
-// which meant a missing GROQ_API_KEY crashed the entire server on startup —
-// this whole file gets require'd transitively through onboarding.controller
-// just for the CSV/business/payments routes too. Building it lazily, only
-// when AI extraction is actually invoked, means a missing key only fails
-// that one request instead of taking down login/orders/everything else.
-let groqClient: Groq | null = null;
+export interface ExtractedCatalogProduct {
+  name: string;
+  price: number;
+  description?: string | null;
+  category?: string | null;
+  stock?: number;
+}
 
-function getGroqClient(): Groq {
-  if (!ENV.GROQ_API_KEY) {
-    throw new Error(
-      "AI catalog extraction isn't configured (GROQ_API_KEY is missing). CSV/XLSX uploads still work without it."
+const CURRENT_GROQ_MODEL = "openai/gpt-oss-120b";
+const RETIRED_MODELS = new Set([
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+]);
+
+const client = new Groq({ apiKey: ENV.GROQ_API_KEY || undefined });
+
+const normalizeProducts = (value: unknown): ExtractedCatalogProduct[] => {
+  const rows = Array.isArray(value)
+    ? value
+    : value && typeof value === "object" && Array.isArray((value as any).products)
+      ? (value as any).products
+      : [];
+
+  return rows.flatMap((row: any) => {
+    const name = String(row?.name ?? row?.product_name ?? "").trim();
+    const price = Number.parseFloat(
+      String(row?.price ?? row?.selling_price ?? row?.amount ?? "").replace(/[,₹$]/g, "")
     );
-  }
-  if (!groqClient) {
-    groqClient = new Groq({ apiKey: ENV.GROQ_API_KEY });
-  }
-  return groqClient;
-}
 
-// Llama 3.3 70B on Groq: strong enough for structured extraction, fast, and
-// comfortably inside the free tier for onboarding-volume traffic. Override
-// via env if you want to try a different open model later.
-const MODEL = ENV.GROQ_MODEL || "llama-3.3-70b-versatile";
+    if (!name || !Number.isFinite(price) || price < 0) return [];
 
-// Keep the output schema strict — this is the one place a model going
-// off-script (extra prose, markdown fences, invented fields) would break
-// the whole upload.
-const SYSTEM_PROMPT = `You extract product catalogs from raw document text.
-Read the text and return every distinct product you can find.
+    const stock = Number.parseInt(String(row?.stock ?? row?.quantity ?? 0), 10);
 
-Respond with ONLY a JSON object of this exact shape, no prose, no markdown:
-{
-  "products": [
-    { "name": string, "price": number, "description": string | null, "category": string | null, "stock": number | null }
-  ]
-}
+    return [{
+      name,
+      price,
+      description: row?.description ? String(row.description).trim() : null,
+      category: row?.category ? String(row.category).trim() : null,
+      stock: Number.isFinite(stock) ? stock : 0,
+    }];
+  });
+};
 
-Rules:
-- "price" must be a plain number (no currency symbols, no commas).
-- If stock isn't mentioned, use null.
-- If you find no products, return { "products": [] }.
-- Never invent products that aren't in the text.`;
-
-export async function extractProductsWithAI(rawText: string): Promise<ParsedProductRow[]> {
-  // Most catalogs comfortably fit in context; if someone uploads something
-  // huge, trim rather than fail outright — a partial catalog beats none.
-  const text = rawText.slice(0, 40000);
-
-  const completion = await getGroqClient().chat.completions.create({
-    model: MODEL,
-    temperature: 0,
+const requestExtraction = async (model: string, text: string) => {
+  const completion = await client.chat.completions.create({
+    model,
+    temperature: 0.1,
+    max_tokens: 12000,
     response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: text },
+      {
+        role: "system",
+        content:
+          "Extract products from the supplied catalogue text. Return only JSON with a products array. " +
+          "Each product must contain name and numeric price. Include description, category and numeric stock when available. " +
+          "Do not invent products or prices. If a field is missing, use null or 0.",
+      },
+      {
+        role: "user",
+        content: `Catalogue text:\n\n${text.slice(0, 120000)}`,
+      },
     ],
   });
 
-  const raw = completion.choices[0]?.message?.content;
-  if (!raw) throw new Error("AI extraction returned no content");
+  const content = completion.choices?.[0]?.message?.content;
+  if (!content) throw new Error("AI returned an empty catalogue response");
 
-  let parsed: { products?: unknown };
+  return normalizeProducts(JSON.parse(content));
+};
+
+export const extractProductsWithAI = async (
+  text: string
+): Promise<ExtractedCatalogProduct[]> => {
+  if (!ENV.GROQ_API_KEY) {
+    throw Object.assign(new Error("GROQ_API_KEY is not configured"), { status: 503 });
+  }
+
+  const configured = String(ENV.GROQ_MODEL || "").trim();
+  const preferred = configured && !RETIRED_MODELS.has(configured)
+    ? configured
+    : CURRENT_GROQ_MODEL;
+
   try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error("AI extraction returned malformed JSON");
-  }
+    return await requestExtraction(preferred, text);
+  } catch (error: any) {
+    const message = String(error?.message || error || "");
+    const shouldRetry = preferred !== CURRENT_GROQ_MODEL && /model|not found|404/i.test(message);
 
-  if (!Array.isArray(parsed.products)) {
-    throw new Error("AI extraction response did not include a products array");
+    if (!shouldRetry) throw error;
+    return requestExtraction(CURRENT_GROQ_MODEL, text);
   }
-
-  return parsed.products
-    .map((p: any): ParsedProductRow | null => {
-      const name = String(p?.name ?? "").trim();
-      const price = Number(p?.price);
-      if (!name || Number.isNaN(price)) return null;
-      return {
-        name,
-        price,
-        description: p?.description ? String(p.description).trim() : undefined,
-        category: p?.category ? String(p.category).trim() : undefined,
-        stock: Number.isFinite(Number(p?.stock)) ? Number(p.stock) : 0,
-      };
-    })
-    .filter((p): p is ParsedProductRow => p !== null);
-}
+};
