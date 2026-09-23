@@ -31,6 +31,7 @@ import paymentRoutes from "./routes/payment.routes";
 import contactRoutes from "./routes/contact.routes";
 import channelRoutes from "./routes/channel.routes";
 import healthRoutes from "./routes/health.routes";
+import billingRoutes from "./routes/billing.routes";
 
 
 // Webhooks
@@ -123,9 +124,8 @@ app.use(
       const url = req.url ?? "";
 
       if (
-        url.startsWith(
-          "/api/webhooks/whatsapp"
-        )
+        url.startsWith("/api/webhooks/whatsapp") ||
+        url.startsWith("/api/billing/webhook")
       ) {
         (req as typeof req & { rawBody?: Buffer }).rawBody =
           Buffer.from(buf);
@@ -215,6 +215,11 @@ app.use(
 app.use(
   "/api/payments",
   paymentRoutes
+);
+
+app.use(
+  "/api/billing",
+  billingRoutes
 );
 
 app.use(
