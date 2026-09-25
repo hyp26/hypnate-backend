@@ -2,6 +2,10 @@ import { Request, Response } from "express";
 import prisma from "../../../prisma/client";
 import { Prisma } from "@prisma/client";
 import { logger } from "../../../utils/logger";
+import {
+  processWhatsAppStatuses,
+  StatusUpdateResult,
+} from "./status.controller";
 
 type WhatsAppMetadata = {
   phoneNumberIds?: unknown;
@@ -346,6 +350,8 @@ export const receiveMessage = async (
       conversation: any;
     }> = [];
 
+    const statusProcessed: StatusUpdateResult[] = [];
+
     for (const entry of body.entry) {
       if (
         !entry ||
@@ -360,32 +366,45 @@ export const receiveMessage = async (
 
         if (
           !value ||
-          typeof value !== "object" ||
-          !Array.isArray(value.messages)
+          typeof value !== "object"
         ) {
           continue;
         }
 
-        for (const message of value.messages) {
-          if (
-            !message ||
-            typeof message !== "object"
-          ) {
-            continue;
-          }
+        /*
+         * Message status updates (sent / delivered / read /
+         * failed) arrive on the same webhook as messages.
+         */
+        const statusUpdates = Array.isArray(
+          value.statuses
+        )
+          ? await processWhatsAppStatuses(value)
+          : [];
 
-          const result = await processMessage(
-            value,
-            message
-          );
+        if (Array.isArray(value.messages)) {
+          for (const message of value.messages) {
+            if (
+              !message ||
+              typeof message !== "object"
+            ) {
+              continue;
+            }
 
-          if (
-            result &&
-            !result.duplicate
-          ) {
-            processed.push(result);
+            const result = await processMessage(
+              value,
+              message
+            );
+
+            if (
+              result &&
+              !result.duplicate
+            ) {
+              processed.push(result);
+            }
           }
         }
+
+        statusProcessed.push(...statusUpdates);
       }
     }
 
@@ -406,6 +425,24 @@ export const receiveMessage = async (
           "new_message",
           item.message
         );
+      }
+
+      for (const item of statusProcessed) {
+        io.to(
+          `seller_${item.conversation.sellerId}`
+        ).emit("message_status_updated", {
+          conversationId: item.conversation.id,
+          messageId: item.message.id,
+          status: item.message.status,
+        });
+
+        io.to(
+          `room_${item.conversation.id}`
+        ).emit("message_status_updated", {
+          conversationId: item.conversation.id,
+          messageId: item.message.id,
+          status: item.message.status,
+        });
       }
     }
 
