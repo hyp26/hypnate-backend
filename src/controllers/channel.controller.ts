@@ -1,9 +1,10 @@
 import { Request, Response } from "express";
+import { Prisma } from "@prisma/client";
 import crypto from "crypto";
 import axios from "axios";
 import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
-import { encrypt } from "../services/crypto.service";
+import { encrypt, decrypt } from "../services/crypto.service";
 import { logger } from "../utils/logger";
 import { ENV } from "../config/env";
 import {
@@ -178,11 +179,11 @@ const verifyOAuthState = (
  */
 
 type WhatsAppConnectionMetadata = {
-  businessId?: string;
+  businessId?: string | null;
   businessName?: string | null;
-  whatsappBusinessId?: string;
-  phoneNumbers?: unknown;
-  connectionStatus?: string;
+  whatsappBusinessId?: string | null;
+  phoneNumbers?: Prisma.JsonArray | null;
+  connectionStatus?: string | null;
   lastValidatedAt?: string | null;
   tokenExpiresAt?: string | null;
   lastError?: string | null;
@@ -224,7 +225,7 @@ const redirectWithWhatsAppResult = (
   res: Response,
   outcome: string,
   reason?: string
-): Response => {
+): void => {
   const redirectUrl = new URL("/settings", ENV.FRONTEND_URL);
 
   redirectUrl.searchParams.set("wa", outcome);
@@ -233,7 +234,7 @@ const redirectWithWhatsAppResult = (
     redirectUrl.searchParams.set("reason", reason);
   }
 
-  return res.redirect(redirectUrl.toString());
+  res.redirect(redirectUrl.toString());
 };
 
 /* ----------------------------------------------------
@@ -644,7 +645,7 @@ export const whatsappCallback = async (
           ).toISOString()
         : null;
 
-    const connectionMetadata = {
+    const connectionMetadata: Prisma.InputJsonObject = {
       businessId: String(business.id),
       businessName:
         typeof business.name === "string"

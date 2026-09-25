@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../../../prisma/client";
-import { Prisma } from "@prisma/client";
+import { Prisma, MessageStatus } from "@prisma/client";
 import { logger } from "../../../utils/logger";
 
 /*
@@ -12,7 +12,7 @@ import { logger } from "../../../utils/logger";
  * (SENT, DELIVERED, READ, FAILED).
  */
 
-const STATUS_VALUES: Record<string, Prisma.MessageStatus> = {
+const STATUS_VALUES: Record<string, MessageStatus> = {
   sent: "SENT",
   delivered: "DELIVERED",
   read: "READ",
@@ -34,7 +34,7 @@ const STATUS_RANK: Record<string, number> = {
 export type StatusUpdateResult = {
   message: {
     id: number;
-    status: Prisma.MessageStatus;
+    status: MessageStatus;
   };
   conversation: {
     id: number;
@@ -165,7 +165,7 @@ const processStatus = async (
   }
 
   const baseMetadata = (message.metadata ??
-    {}) as Record<string, unknown>;
+    {}) as Prisma.JsonObject;
 
   const updated = await prisma.message.update({
     where: { id: message.id },
