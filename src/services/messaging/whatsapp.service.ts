@@ -86,6 +86,77 @@ export const getPhoneNumbers = async (
   return data.data;
 };
 
+/*
+ * Fetch a single WhatsApp Business Account.
+ *
+ * Used to validate that the stored access token still
+ * works and that the account is still reachable.
+ */
+export const getWhatsAppBusinessAccount = async (
+  accessToken: string,
+  wabaId: string
+) => {
+  const { data } = await axios.get(
+    `${GRAPH_URL}/${wabaId}`,
+    {
+      params: {
+        fields: "id,name,account_review_status",
+      },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+  return data;
+};
+
+/*
+ * Subscribe this app to the WABA's webhook events.
+ *
+ * Meta requires POST /{waba-id}/subscribed_apps before
+ * messages and message status events for the phone numbers
+ * under this WABA are delivered to the app webhook.
+ */
+export const subscribeWabaWebhooks = async (
+  accessToken: string,
+  wabaId: string
+): Promise<boolean> => {
+  const { data } = await axios.post(
+    `${GRAPH_URL}/${wabaId}/subscribed_apps`,
+    {},
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+  return data?.success === true;
+};
+
+/*
+ * Unsubscribe this app from the WABA's webhook events.
+ *
+ * Used when a seller disconnects their WhatsApp channel so
+ * no further webhook events are delivered for their number.
+ */
+export const unsubscribeWabaWebhooks = async (
+  accessToken: string,
+  wabaId: string
+): Promise<boolean> => {
+  const { data } = await axios.delete(
+    `${GRAPH_URL}/${wabaId}/subscribed_apps`,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+  return data?.success === true;
+};
+
 export const sendWhatsAppMessage = async (
   accessToken: string,
   phoneNumberId: string,

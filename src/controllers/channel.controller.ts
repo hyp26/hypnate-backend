@@ -11,6 +11,9 @@ import {
   getBusinesses,
   getWhatsAppBusinessAccounts,
   getPhoneNumbers,
+  getWhatsAppBusinessAccount,
+  subscribeWabaWebhooks,
+  unsubscribeWabaWebhooks,
 } from "../services/messaging/whatsapp.service";
 
 /* ----------------------------------------------------
@@ -161,6 +164,76 @@ const verifyOAuthState = (
   } catch {
     return null;
   }
+};
+
+/* ----------------------------------------------------
+   WHATSAPP CONNECTION METADATA HELPERS
+---------------------------------------------------- */
+
+/*
+ * Lifecycle state is persisted inside the existing
+ * ChannelConnection.metadata JSON column together with the
+ * connection assets (business, WABA, phone numbers) that the
+ * OAuth callback already stores there.
+ */
+
+type WhatsAppConnectionMetadata = {
+  businessId?: string;
+  businessName?: string | null;
+  whatsappBusinessId?: string;
+  phoneNumbers?: unknown;
+  connectionStatus?: string;
+  lastValidatedAt?: string | null;
+  tokenExpiresAt?: string | null;
+  lastError?: string | null;
+};
+
+const readWhatsAppMetadata = (
+  metadata: unknown
+): WhatsAppConnectionMetadata =>
+  (metadata ?? {}) as WhatsAppConnectionMetadata;
+
+/*
+ * Only well-known, non-sensitive phone number fields are
+ * returned to the browser. No tokens ever leave the server.
+ */
+const sanitizePhoneNumbers = (phoneNumbers: unknown) =>
+  Array.isArray(phoneNumbers)
+    ? phoneNumbers
+        .filter(
+          (phone): phone is Record<string, unknown> =>
+            !!phone && typeof phone === "object"
+        )
+        .map((phone) => ({
+          id:
+            typeof phone.id === "string"
+              ? phone.id
+              : String(phone.id ?? ""),
+          displayPhoneNumber:
+            typeof phone.display_phone_number === "string"
+              ? phone.display_phone_number
+              : null,
+          verifiedName:
+            typeof phone.verified_name === "string"
+              ? phone.verified_name
+              : null,
+        }))
+    : [];
+
+const redirectWithWhatsAppResult = (
+  res: Response,
+  outcome: string,
+  reason?: string
+): Response => {
+  const redirectUrl = new URL("/settings", ENV.FRONTEND_URL);
+
+  redirectUrl.searchParams.set("wa", outcome);
+
+  if (reason) {
+    redirectUrl.searchParams.set("reason", reason);
+  }
+
+  return res.redirect(redirectUrl.toString());
 };
 
 /* ----------------------------------------------------
@@ -396,15 +469,19 @@ export const whatsappCallback = async (
         path: "/api/channels/whatsapp/callback",
       });
 
-      return res.status(400).json({
-        message: "WhatsApp authorization was not completed",
-      });
+      return redirectWithWhatsAppResult(
+        res,
+        "error",
+        "authorization_denied"
+      );
     }
 
     if (!code || !returnedState) {
-      return res.status(400).json({
-        message: "Invalid WhatsApp authorization response",
-      });
+      return redirectWithWhatsAppResult(
+        res,
+        "error",
+        "invalid_response"
+      );
     }
 
     /*
@@ -419,9 +496,11 @@ export const whatsappCallback = async (
       !storedState ||
       typeof storedState !== "string"
     ) {
-      return res.status(400).json({
-        message: "OAuth session expired or is invalid",
-      });
+      return redirectWithWhatsAppResult(
+        res,
+        "error",
+        "session_expired"
+      );
     }
 
     if (storedState !== returnedState) {
@@ -429,9 +508,11 @@ export const whatsappCallback = async (
         path: "/api/channels/whatsapp/callback",
       });
 
-      return res.status(400).json({
-        message: "Invalid OAuth state",
-      });
+      return redirectWithWhatsAppResult(
+        res,
+        "error",
+        "state_mismatch"
+      );
     }
 
     /*
@@ -445,9 +526,11 @@ export const whatsappCallback = async (
         path: "/api/channels/whatsapp/callback",
       });
 
-      return res.status(400).json({
-        message: "Invalid or expired OAuth state",
-      });
+      return redirectWithWhatsAppResult(
+        res,
+        "error",
+        "state_invalid"
+      );
     }
 
     const { sellerId } = verifiedState;
@@ -472,9 +555,11 @@ export const whatsappCallback = async (
       typeof token.access_token !== "string" ||
       !token.access_token
     ) {
-      return res.status(502).json({
-        message: "WhatsApp authorization failed",
-      });
+      return redirectWithWhatsAppResult(
+        res,
+        "error",
+        "authorization_failed"
+      );
     }
 
     const accessToken = token.access_token;
@@ -485,9 +570,11 @@ export const whatsappCallback = async (
     const businesses = await getBusinesses(accessToken);
 
     if (!Array.isArray(businesses) || !businesses.length) {
-      return res.status(404).json({
-        message: "No Business Manager found",
-      });
+      return redirectWithWhatsAppResult(
+        res,
+        "error",
+        "no_business"
+      );
     }
 
     const business = businesses[0];
@@ -501,26 +588,84 @@ export const whatsappCallback = async (
     );
 
     if (!Array.isArray(wabas) || !wabas.length) {
-      return res.status(404).json({
-        message: "No WhatsApp Business Account found",
-      });
+      return redirectWithWhatsAppResult(
+        res,
+        "error",
+        "no_whatsapp_account"
+      );
     }
 
     const whatsappBusiness = wabas[0];
+
+    const wabaId = String(whatsappBusiness.id);
 
     /*
      * 4. Fetch phone numbers.
      */
     const phoneNumbers = await getPhoneNumbers(
-      String(whatsappBusiness.id),
+      wabaId,
       accessToken
     );
 
     /*
-     * 5. Store the credential securely on the server.
-     *
-     * The plaintext access token NEVER goes into the response.
+     * 5. Subscribe this app to the seller's WABA so messages
+     *    and status events start flowing to the Hypnate
+     *    webhook immediately.
      */
+    let subscriptionOk = false;
+
+    try {
+      subscriptionOk = await subscribeWabaWebhooks(
+        accessToken,
+        wabaId
+      );
+    } catch (err) {
+      logger.error(
+        "WhatsApp webhook subscription failed",
+        err
+      );
+
+      subscriptionOk = false;
+    }
+
+    /*
+     * 6. Persist the connection with its lifecycle state.
+     *
+     * The plaintext access token NEVER goes into the response
+     * and is stored encrypted only.
+     */
+    const tokenExpiresInSeconds = Number(token.expires_in);
+
+    const tokenExpiresAt =
+      Number.isFinite(tokenExpiresInSeconds) &&
+      tokenExpiresInSeconds > 0
+        ? new Date(
+            Date.now() + tokenExpiresInSeconds * 1000
+          ).toISOString()
+        : null;
+
+    const connectionMetadata = {
+      businessId: String(business.id),
+      businessName:
+        typeof business.name === "string"
+          ? business.name
+          : null,
+      whatsappBusinessId: wabaId,
+      phoneNumbers: Array.isArray(phoneNumbers)
+        ? phoneNumbers
+        : [],
+      connectionStatus: subscriptionOk
+        ? "ACTIVE"
+        : "ERROR",
+      lastValidatedAt: subscriptionOk
+        ? new Date().toISOString()
+        : null,
+      tokenExpiresAt,
+      lastError: subscriptionOk
+        ? null
+        : "webhook_subscription_failed",
+    };
+
     await prisma.channelConnection.upsert({
       where: {
         sellerId_platform: {
@@ -536,22 +681,8 @@ export const whatsappCallback = async (
             ? whatsappBusiness.name
             : "WhatsApp Business",
         accessToken: encrypt(accessToken),
-        externalAccountId: String(
-          whatsappBusiness.id
-        ),
-        metadata: {
-          businessId: String(business.id),
-          businessName:
-            typeof business.name === "string"
-              ? business.name
-              : null,
-          whatsappBusinessId: String(
-            whatsappBusiness.id
-          ),
-          phoneNumbers: Array.isArray(phoneNumbers)
-            ? phoneNumbers
-            : [],
-        },
+        externalAccountId: wabaId,
+        metadata: connectionMetadata,
         isActive: true,
       },
       update: {
@@ -560,58 +691,26 @@ export const whatsappCallback = async (
             ? whatsappBusiness.name
             : "WhatsApp Business",
         accessToken: encrypt(accessToken),
-        externalAccountId: String(
-          whatsappBusiness.id
-        ),
-        metadata: {
-          businessId: String(business.id),
-          businessName:
-            typeof business.name === "string"
-              ? business.name
-              : null,
-          whatsappBusinessId: String(
-            whatsappBusiness.id
-          ),
-          phoneNumbers: Array.isArray(phoneNumbers)
-            ? phoneNumbers
-            : [],
-        },
+        externalAccountId: wabaId,
+        metadata: connectionMetadata,
         isActive: true,
       },
     });
 
     /*
-     * IMPORTANT:
-     *
-     * Never return:
-     * - accessToken
-     * - Meta OAuth token response
-     * - raw Business Manager response
-     * - raw WABA response
-     * - raw API errors
+     * 7. Send the browser back to the Hypnate frontend with a
+     *    safe, fixed outcome parameter. No Meta payloads, tokens
+     *    or internal errors are exposed.
      */
-    return res.json({
-      success: true,
-      message: "WhatsApp connected successfully",
-      sellerId,
-      business: {
-        id: business.id,
-        name:
-          typeof business.name === "string"
-            ? business.name
-            : null,
-      },
-      whatsappBusiness: {
-        id: whatsappBusiness.id,
-        name:
-          typeof whatsappBusiness.name === "string"
-            ? whatsappBusiness.name
-            : null,
-      },
-      phoneNumbers: Array.isArray(phoneNumbers)
-        ? phoneNumbers
-        : [],
-    });
+    if (subscriptionOk) {
+      return redirectWithWhatsAppResult(res, "connected");
+    }
+
+    return redirectWithWhatsAppResult(
+      res,
+      "error",
+      "webhook_subscription_failed"
+    );
   } catch (err) {
     /*
      * SECURITY:
@@ -623,8 +722,333 @@ export const whatsappCallback = async (
      */
     logger.error("Failed to connect WhatsApp", err);
 
+    return redirectWithWhatsAppResult(
+      res,
+      "error",
+      "connection_failed"
+    );
+  }
+};
+
+/* ----------------------------------------------------
+   WHATSAPP CONNECTION STATUS
+---------------------------------------------------- */
+
+export const getWhatsAppStatus = async (
+  req: Request,
+  res: Response
+) => {
+  try {
+    const authReq = req as AuthRequest;
+
+    const sellerId = authReq.user?.sellerId;
+
+    if (!sellerId) {
+      return res.status(401).json({
+        message: "Unauthorized",
+      });
+    }
+
+    const connection =
+      await prisma.channelConnection.findFirst({
+        where: {
+          sellerId,
+          platform: "WHATSAPP",
+        },
+        select: {
+          name: true,
+          externalAccountId: true,
+          isActive: true,
+          metadata: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+    if (!connection) {
+      return res.json({
+        connected: false,
+        connectionStatus: "NOT_CONNECTED",
+      });
+    }
+
+    const metadata = readWhatsAppMetadata(
+      connection.metadata
+    );
+
+    const connectionStatus = !connection.isActive
+      ? "DISCONNECTED"
+      : metadata.connectionStatus ?? "ACTIVE";
+
+    return res.json({
+      connected: connection.isActive,
+      connectionStatus,
+      businessName: metadata.businessName ?? null,
+      whatsappBusinessName:
+        typeof connection.name === "string"
+          ? connection.name
+          : null,
+      wabaId: metadata.whatsappBusinessId ?? null,
+      phoneNumbers: sanitizePhoneNumbers(
+        metadata.phoneNumbers
+      ),
+      lastValidatedAt: metadata.lastValidatedAt ?? null,
+      tokenExpiresAt: metadata.tokenExpiresAt ?? null,
+      lastError: metadata.lastError ?? null,
+      connectedAt: connection.createdAt,
+      updatedAt: connection.updatedAt,
+    });
+  } catch (err) {
+    logger.error("Failed to read WhatsApp status", err);
+
     return res.status(500).json({
-      message: "WhatsApp connection failed",
+      message: "Could not read WhatsApp connection status",
+    });
+  }
+};
+
+/* ----------------------------------------------------
+   VALIDATE WHATSAPP CONNECTION
+---------------------------------------------------- */
+
+export const validateWhatsAppConnection = async (
+  req: Request,
+  res: Response
+) => {
+  try {
+    const authReq = req as AuthRequest;
+
+    const sellerId = authReq.user?.sellerId;
+
+    if (!sellerId) {
+      return res.status(401).json({
+        message: "Unauthorized",
+      });
+    }
+
+    const connection =
+      await prisma.channelConnection.findFirst({
+        where: {
+          sellerId,
+          platform: "WHATSAPP",
+        },
+        select: {
+          accessToken: true,
+          metadata: true,
+        },
+      });
+
+    if (!connection || !connection.accessToken) {
+      return res.status(400).json({
+        message: "WhatsApp is not connected",
+      });
+    }
+
+    const metadata = readWhatsAppMetadata(
+      connection.metadata
+    );
+
+    const wabaId = metadata.whatsappBusinessId;
+
+    if (!wabaId) {
+      return res.status(400).json({
+        message:
+          "WhatsApp business account is not configured. Please reconnect WhatsApp.",
+      });
+    }
+
+    let accessToken: string;
+
+    try {
+      accessToken = decrypt(connection.accessToken);
+    } catch {
+      await prisma.channelConnection.updateMany({
+        where: {
+          sellerId,
+          platform: "WHATSAPP",
+        },
+        data: {
+          metadata: {
+            ...metadata,
+            connectionStatus: "ERROR",
+            lastError: "credential_unreadable",
+          },
+        },
+      });
+
+      return res.status(500).json({
+        message:
+          "Stored WhatsApp credential could not be read. Please reconnect WhatsApp.",
+      });
+    }
+
+    /*
+     * Validate by fetching the WABA with the stored token.
+     * A successful response proves the token is still valid
+     * and the account is reachable.
+     */
+    try {
+      const waba = await getWhatsAppBusinessAccount(
+        accessToken,
+        wabaId
+      );
+
+      const validatedAt = new Date().toISOString();
+
+      await prisma.channelConnection.updateMany({
+        where: {
+          sellerId,
+          platform: "WHATSAPP",
+        },
+        data: {
+          isActive: true,
+          metadata: {
+            ...metadata,
+            connectionStatus: "ACTIVE",
+            lastValidatedAt: validatedAt,
+            lastError: null,
+          },
+        },
+      });
+
+      return res.json({
+        valid: true,
+        validatedAt,
+        whatsappBusinessName:
+          waba &&
+          typeof waba.name === "string" &&
+          waba.name
+            ? waba.name
+            : null,
+      });
+    } catch (err) {
+      logger.error(
+        "WhatsApp connection validation failed",
+        err
+      );
+
+      await prisma.channelConnection.updateMany({
+        where: {
+          sellerId,
+          platform: "WHATSAPP",
+        },
+        data: {
+          metadata: {
+            ...metadata,
+            connectionStatus: "ERROR",
+            lastError: "validation_failed",
+          },
+        },
+      });
+
+      return res.status(502).json({
+        valid: false,
+        message:
+          "WhatsApp connection could not be validated. Please reconnect WhatsApp.",
+      });
+    }
+  } catch (err) {
+    logger.error(
+      "Failed to validate WhatsApp connection",
+      err
+    );
+
+    return res.status(500).json({
+      message: "Could not validate WhatsApp connection",
+    });
+  }
+};
+
+/* ----------------------------------------------------
+   DISCONNECT WHATSAPP
+---------------------------------------------------- */
+
+export const disconnectWhatsApp = async (
+  req: Request,
+  res: Response
+) => {
+  try {
+    const authReq = req as AuthRequest;
+
+    const sellerId = authReq.user?.sellerId;
+
+    if (!sellerId) {
+      return res.status(401).json({
+        message: "Unauthorized",
+      });
+    }
+
+    const connection =
+      await prisma.channelConnection.findFirst({
+        where: {
+          sellerId,
+          platform: "WHATSAPP",
+        },
+        select: {
+          accessToken: true,
+          metadata: true,
+        },
+      });
+
+    if (!connection) {
+      return res.json({
+        success: true,
+        message: "WhatsApp is not connected",
+      });
+    }
+
+    const metadata = readWhatsAppMetadata(
+      connection.metadata
+    );
+
+    /*
+     * Best effort: unsubscribe the app from the seller's WABA
+     * so no further webhook events are delivered. Even if this
+     * fails (for example an expired token), the local connection
+     * is still disabled below.
+     */
+    if (connection.accessToken && metadata.whatsappBusinessId) {
+      try {
+        const accessToken = decrypt(
+          connection.accessToken
+        );
+
+        await unsubscribeWabaWebhooks(
+          accessToken,
+          metadata.whatsappBusinessId
+        );
+      } catch (err) {
+        logger.error(
+          "WhatsApp webhook unsubscription failed",
+          err
+        );
+      }
+    }
+
+    await prisma.channelConnection.updateMany({
+      where: {
+        sellerId,
+        platform: "WHATSAPP",
+      },
+      data: {
+        isActive: false,
+        metadata: {
+          ...metadata,
+          connectionStatus: "DISCONNECTED",
+          lastError: null,
+        },
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: "WhatsApp disconnected",
+    });
+  } catch (err) {
+    logger.error("Failed to disconnect WhatsApp", err);
+
+    return res.status(500).json({
+      message: "Could not disconnect WhatsApp",
     });
   }
 };
