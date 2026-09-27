@@ -29,6 +29,7 @@ import hypnatexInternalRoutes from "./routes/hypnatex.internal.routes";
 import onboardingRoutes from "./routes/onboarding.routes";
 import paymentRoutes from "./routes/payment.routes";
 import contactRoutes from "./routes/contact.routes";
+import privacyRoutes from "./routes/privacy.routes";
 import channelRoutes from "./routes/channel.routes";
 import healthRoutes from "./routes/health.routes";
 import billingRoutes from "./routes/billing.routes";
@@ -54,7 +55,8 @@ const app = express();
 /* ---------------- TRUST PROXY ---------------- */
 app.set("trust proxy", 1);
 
-/* ---------------- CORS ---------------- */
+/* ---------------- CORS ----
+------------ */
 
 const IS_PRODUCTION = ENV.NODE_ENV === "production";
 
@@ -169,7 +171,8 @@ app.use(
 
 app.use(
   "/api/dashboard",
-  dashboardRoutes
+  dashboa
+rdRoutes
 );
 
 app.use(
@@ -230,6 +233,11 @@ app.use(
 app.use(
   "/api/channels",
   channelRoutes
+);
+
+app.use(
+  "/api/privacy",
+  privacyRoutes
 );
 
 // IMPORTANT: internal BEFORE public
@@ -321,7 +329,8 @@ const io = new Server(httpServer, {
 /*
  * Make Socket.IO available to controllers.
  */
-app.set("io", io);
+app.set("io"
+, io);
 
 /* ---------------- SOCKET AUTH HELPERS ---------------- */
 
@@ -425,7 +434,8 @@ io.use(async (socket, next) => {
       },
     });
 
-    if (!user || !user.sellerId) {
+    if (!user || !user
+.sellerId) {
       return next(
         new Error("Unauthorized")
       );
@@ -526,7 +536,8 @@ io.on("connection", (socket) => {
    */
   socket.on(
     "leave_conversation",
-    (conversationId) => {
+    (conversationId
+) => {
       const id = Number(conversationId);
 
       if (
