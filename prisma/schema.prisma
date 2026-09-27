@@ -111,8 +111,7 @@ model PasswordReset {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-model R
-efreshSession {
+model RefreshSession {
   id        Int       @id @default(autoincrement())
   userId    Int
   tokenHash String    @unique
@@ -186,8 +185,7 @@ model ChannelConnection {
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id])
 
-  platform Platfor
-m
+  platform Platform
 
   name String?
 
@@ -278,8 +276,7 @@ model Message {
   id Int @id @default(autoincrement())
 
   conversationId Int
-  conversation   Conversation @relation(fields: [conversati
-onId], references: [id], onDelete: Cascade)
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   sender    MessageSender
   direction MessageDirection
@@ -365,8 +362,7 @@ model Customer {
   email String?
   phone String?
 
-  tota
-lOrders Int   @default(0)
+  totalOrders Int   @default(0)
   totalSpent  Float @default(0)
 
   lastOrderAt DateTime?
@@ -470,8 +466,7 @@ model Upload {
 // ─────────────────────────────────────────────
 
 model Notification {
-  id Int @id @default(au
-toincrement())
+  id Int @id @default(autoincrement())
 
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
@@ -582,8 +577,7 @@ model BuildJob {
 // ─────────────────────────────────────────────
 
 model ContactSubmission {
-  id Int @id @defaul
-t(autoincrement())
+  id Int @id @default(autoincrement())
 
   name    String
   email   String
@@ -610,18 +604,17 @@ enum DeletionRequestStatus {
   REJECTED
 }
 
-/*
- * Intake record for public data-deletion requests
- * (Meta platform compliance). A record is created as
- * PENDING and is only progressed after Hypnate verifies
- * the requester out-of-band. This model intentionally
- * stores no account references.
- */
+// Intake record for public data-deletion requests.
+// Meta platform compliance. A record is created as
+// PENDING and is only progressed after Hypnate verifies
+// the requester out-of-band. This model intentionally
+// stores no account references.
+
 model DeletionRequest {
   id Int @id @default(autoincrement())
 
   contactEmail String
-  details     String?
+  details      String?
 
   status     DeletionRequestStatus @default(PENDING)
   reviewedAt DateTime?
