@@ -171,8 +171,7 @@ app.use(
 
 app.use(
   "/api/dashboard",
-  dashboa
-rdRoutes
+  dashboardRoutes
 );
 
 app.use(
