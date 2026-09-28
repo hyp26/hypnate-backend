@@ -8,6 +8,15 @@ import { encrypt, decrypt } from "../services/crypto.service";
 import { logger } from "../utils/logger";
 import { ENV } from "../config/env";
 import {
+  buildWhatsAppResultRedirectUrl,
+  createOAuthState,
+  DEFAULT_OAUTH_RETURN_TO,
+  normalizeReturnTo,
+  OAUTH_STATE_MAX_AGE,
+  verifyOAuthState,
+} from "../utils/whatsapp-oauth-state";
+import type { WhatsAppOAuthReturnTo } from "../utils/whatsapp-oauth-state";
+import {
   exchangeCodeForAccessToken,
   getBusinesses,
   getWhatsAppBusinessAccounts,
@@ -23,149 +32,11 @@ import {
 
 const IS_PROD = ENV.NODE_ENV === "production";
 
-const OAUTH_STATE_MAX_AGE = 10 * 60 * 1000; // 10 minutes
-
 const META_APP_SECRET = ENV.META_APP_SECRET;
 
 if (!META_APP_SECRET) {
   throw new Error("META_APP_SECRET environment variable is missing");
 }
-
-/* ----------------------------------------------------
-   WHATSAPP OAUTH STATE
----------------------------------------------------- */
-
-/**
- * OAuth state format:
- *
- * base64url(payload).base64url(signature)
- *
- * Payload contains:
- * - sellerId
- * - issuedAt
- * - random nonce
- *
- * The HMAC prevents an attacker from modifying the seller ID
- * or generating their own valid OAuth state.
- */
-const createOAuthState = (sellerId: number): string => {
-  const payload = {
-    sellerId,
-    issuedAt: Date.now(),
-    nonce: crypto.randomBytes(32).toString("hex"),
-  };
-
-  const payloadEncoded = Buffer.from(
-    JSON.stringify(payload),
-    "utf8"
-  ).toString("base64url");
-
-  const signature = crypto
-    .createHmac("sha256", META_APP_SECRET)
-    .update(payloadEncoded)
-    .digest("base64url");
-
-  return `${payloadEncoded}.${signature}`;
-};
-
-/**
- * Verify and decode OAuth state.
- *
- * Returns the seller ID only after:
- * - validating the state structure
- * - validating the HMAC signature
- * - validating the timestamp
- */
-const verifyOAuthState = (
-  state: string
-): { sellerId: number } | null => {
-  try {
-    const parts = state.split(".");
-
-    if (parts.length !== 2) {
-      return null;
-    }
-
-    const [payloadEncoded, receivedSignature] = parts;
-
-    if (!payloadEncoded || !receivedSignature) {
-      return null;
-    }
-
-    const expectedSignature = crypto
-      .createHmac("sha256", META_APP_SECRET)
-      .update(payloadEncoded)
-      .digest("base64url");
-
-    const receivedBuffer = Buffer.from(
-      receivedSignature,
-      "utf8"
-    );
-
-    const expectedBuffer = Buffer.from(
-      expectedSignature,
-      "utf8"
-    );
-
-    if (
-      receivedBuffer.length !== expectedBuffer.length ||
-      !crypto.timingSafeEqual(
-        receivedBuffer,
-        expectedBuffer
-      )
-    ) {
-      return null;
-    }
-
-    const payloadJson = Buffer.from(
-      payloadEncoded,
-      "base64url"
-    ).toString("utf8");
-
-    const payload = JSON.parse(payloadJson) as {
-      sellerId?: unknown;
-      issuedAt?: unknown;
-      nonce?: unknown;
-    };
-
-    if (
-      typeof payload.sellerId !== "number" ||
-      !Number.isInteger(payload.sellerId) ||
-      payload.sellerId <= 0
-    ) {
-      return null;
-    }
-
-    if (
-      typeof payload.issuedAt !== "number" ||
-      !Number.isFinite(payload.issuedAt)
-    ) {
-      return null;
-    }
-
-    if (
-      typeof payload.nonce !== "string" ||
-      payload.nonce.length < 32
-    ) {
-      return null;
-    }
-
-    const age = Date.now() - payload.issuedAt;
-
-    if (
-      age < 0 ||
-      age > OAUTH_STATE_MAX_AGE
-    ) {
-      return null;
-    }
-
-    return {
-      sellerId: payload.sellerId,
-    };
-  } catch {
-    return null;
-  }
-};
 
 /* ----------------------------------------------------
    WHATSAPP CONNECTION METADATA HELPERS
@@ -224,17 +95,21 @@ const sanitizePhoneNumbers = (phoneNumbers: unknown) =>
 const redirectWithWhatsAppResult = (
   res: Response,
   outcome: string,
-  reason?: string
+  reason?: string,
+  returnTo: WhatsAppOAuthReturnTo = DEFAULT_OAUTH_RETURN_TO
 ): void => {
-  const redirectUrl = new URL("/settings", ENV.FRONTEND_URL);
-
-  redirectUrl.searchParams.set("wa", outcome);
-
-  if (reason) {
-    redirectUrl.searchParams.set("reason", reason);
-  }
-
-  res.redirect(redirectUrl.toString());
+  /*
+   * The destination is a fixed enum resolved from the signed OAuth
+   * state. It can never be an arbitrary or attacker-controlled URL.
+   */
+  res.redirect(
+    buildWhatsAppResultRedirectUrl(
+      ENV.FRONTEND_URL,
+      outcome,
+      reason,
+      returnTo
+    )
+  );
 };
 
 /* ----------------------------------------------------
@@ -396,12 +271,20 @@ export const connectWhatsApp = async (
     }
 
     /*
+     * The return destination is a fixed internal enum
+     * ("onboarding" | "settings") - never an arbitrary URL. Unknown
+     * values fall back to "settings", which preserves the pre-existing
+     * Settings behaviour.
+     */
+    const returnTo = normalizeReturnTo(req.query.returnTo);
+
+    /*
      * Generate an unpredictable, signed OAuth state.
      *
-     * The seller ID is inside the signed state instead of being
-     * directly exposed as `state=123`.
+     * The seller ID and the return context are inside the signed
+     * state instead of being directly exposed as `state=123`.
      */
-    const state = createOAuthState(sellerId);
+    const state = createOAuthState(sellerId, returnTo, META_APP_SECRET);
 
     /*
      * Store the exact OAuth state in an HttpOnly cookie.
@@ -462,6 +345,16 @@ export const whatsappCallback = async (
         : undefined;
 
     /*
+     * Best-effort return context for the failure paths that run
+     * before the state can be fully verified. A state that fails
+     * verification falls back to the default "settings" route.
+     */
+    const earlyReturnTo: WhatsAppOAuthReturnTo = returnedState
+      ? verifyOAuthState(returnedState, META_APP_SECRET)?.returnTo ??
+        DEFAULT_OAUTH_RETURN_TO
+      : DEFAULT_OAUTH_RETURN_TO;
+
+    /*
      * Meta may return an OAuth error when the user cancels
      * or denies authorization.
      */
@@ -473,7 +366,8 @@ export const whatsappCallback = async (
       return redirectWithWhatsAppResult(
         res,
         "error",
-        "authorization_denied"
+        "authorization_denied",
+        earlyReturnTo
       );
     }
 
@@ -481,7 +375,8 @@ export const whatsappCallback = async (
       return redirectWithWhatsAppResult(
         res,
         "error",
-        "invalid_response"
+        "invalid_response",
+        earlyReturnTo
       );
     }
 
@@ -500,7 +395,8 @@ export const whatsappCallback = async (
       return redirectWithWhatsAppResult(
         res,
         "error",
-        "session_expired"
+        "session_expired",
+        earlyReturnTo
       );
     }
 
@@ -512,7 +408,8 @@ export const whatsappCallback = async (
       return redirectWithWhatsAppResult(
         res,
         "error",
-        "state_mismatch"
+        "state_mismatch",
+        earlyReturnTo
       );
     }
 
@@ -530,11 +427,12 @@ export const whatsappCallback = async (
       return redirectWithWhatsAppResult(
         res,
         "error",
-        "state_invalid"
+        "state_invalid",
+        earlyReturnTo
       );
     }
 
-    const { sellerId } = verifiedState;
+    const { sellerId, returnTo: verifiedReturnTo } = verifiedState;
 
     /*
      * The state cookie is single-use from our application's
@@ -559,7 +457,8 @@ export const whatsappCallback = async (
       return redirectWithWhatsAppResult(
         res,
         "error",
-        "authorization_failed"
+        "authorization_failed",
+        verifiedReturnTo
       );
     }
 
@@ -574,7 +473,8 @@ export const whatsappCallback = async (
       return redirectWithWhatsAppResult(
         res,
         "error",
-        "no_business"
+        "no_business",
+        verifiedReturnTo
       );
     }
 
@@ -592,7 +492,8 @@ export const whatsappCallback = async (
       return redirectWithWhatsAppResult(
         res,
         "error",
-        "no_whatsapp_account"
+        "no_whatsapp_account",
+        verifiedReturnTo
       );
     }
 
@@ -704,13 +605,19 @@ export const whatsappCallback = async (
      *    or internal errors are exposed.
      */
     if (subscriptionOk) {
-      return redirectWithWhatsAppResult(res, "connected");
+      return redirectWithWhatsAppResult(
+        res,
+        "connected",
+        undefined,
+        verifiedReturnTo
+      );
     }
 
     return redirectWithWhatsAppResult(
       res,
       "error",
-      "webhook_subscription_failed"
+      "webhook_subscription_failed",
+      verifiedReturnTo
     );
   } catch (err) {
     /*
@@ -726,7 +633,8 @@ export const whatsappCallback = async (
     return redirectWithWhatsAppResult(
       res,
       "error",
-      "connection_failed"
+      "connection_failed",
+      verifiedReturnTo
     );
   }
 };
