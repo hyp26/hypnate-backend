@@ -333,6 +333,17 @@ export const whatsappCallback = async (
   req: Request,
   res: Response
 ) => {
+  /*
+   * Keep the return destination outside the try block so it is
+   * available to the catch block as well.
+   *
+   * This is only a best-effort value for early failure paths.
+   * The final successful OAuth flow always uses verifiedReturnTo
+   * from the cryptographically verified state.
+   */
+  let earlyReturnTo: WhatsAppOAuthReturnTo =
+    DEFAULT_OAUTH_RETURN_TO;
+
   try {
     const code =
       typeof req.query.code === "string"
@@ -345,13 +356,17 @@ export const whatsappCallback = async (
         : undefined;
 
     /*
-     * Best-effort return context for the failure paths that run
-     * before the state can be fully verified. A state that fails
-     * verification falls back to the default "settings" route.
+     * Best-effort return context for failure paths that run
+     * before the state can be fully verified.
+     *
+     * If the state is missing, malformed, expired, or has an
+     * invalid signature, safely fall back to "settings".
      */
-    const earlyReturnTo: WhatsAppOAuthReturnTo = returnedState
-      ? verifyOAuthState(returnedState, META_APP_SECRET)?.returnTo ??
-        DEFAULT_OAUTH_RETURN_TO
+    earlyReturnTo = returnedState
+      ? verifyOAuthState(
+          returnedState,
+          META_APP_SECRET
+        )?.returnTo ?? DEFAULT_OAUTH_RETURN_TO
       : DEFAULT_OAUTH_RETURN_TO;
 
     /*
@@ -417,7 +432,10 @@ export const whatsappCallback = async (
      * Verify the cryptographic signature and expiration.
      */
     const verifiedState =
-      verifyOAuthState(returnedState);
+      verifyOAuthState(
+        returnedState,
+        META_APP_SECRET
+      );
 
     if (!verifiedState) {
       res.clearCookie("whatsapp_oauth_state", {
@@ -432,7 +450,14 @@ export const whatsappCallback = async (
       );
     }
 
-    const { sellerId, returnTo: verifiedReturnTo } = verifiedState;
+    /*
+     * From this point onward, only use the return destination
+     * from the cryptographically verified state.
+     */
+    const {
+      sellerId,
+      returnTo: verifiedReturnTo,
+    } = verifiedState;
 
     /*
      * The state cookie is single-use from our application's
@@ -447,7 +472,8 @@ export const whatsappCallback = async (
      *
      * The token remains server-side.
      */
-    const token = await exchangeCodeForAccessToken(code);
+    const token =
+      await exchangeCodeForAccessToken(code);
 
     if (
       !token ||
@@ -467,9 +493,13 @@ export const whatsappCallback = async (
     /*
      * 2. Fetch Business Managers.
      */
-    const businesses = await getBusinesses(accessToken);
+    const businesses =
+      await getBusinesses(accessToken);
 
-    if (!Array.isArray(businesses) || !businesses.length) {
+    if (
+      !Array.isArray(businesses) ||
+      !businesses.length
+    ) {
       return redirectWithWhatsAppResult(
         res,
         "error",
@@ -483,12 +513,16 @@ export const whatsappCallback = async (
     /*
      * 3. Fetch WhatsApp Business Accounts.
      */
-    const wabas = await getWhatsAppBusinessAccounts(
-      String(business.id),
-      accessToken
-    );
+    const wabas =
+      await getWhatsAppBusinessAccounts(
+        String(business.id),
+        accessToken
+      );
 
-    if (!Array.isArray(wabas) || !wabas.length) {
+    if (
+      !Array.isArray(wabas) ||
+      !wabas.length
+    ) {
       return redirectWithWhatsAppResult(
         res,
         "error",
@@ -499,15 +533,18 @@ export const whatsappCallback = async (
 
     const whatsappBusiness = wabas[0];
 
-    const wabaId = String(whatsappBusiness.id);
+    const wabaId = String(
+      whatsappBusiness.id
+    );
 
     /*
      * 4. Fetch phone numbers.
      */
-    const phoneNumbers = await getPhoneNumbers(
-      wabaId,
-      accessToken
-    );
+    const phoneNumbers =
+      await getPhoneNumbers(
+        wabaId,
+        accessToken
+      );
 
     /*
      * 5. Subscribe this app to the seller's WABA so messages
@@ -517,10 +554,11 @@ export const whatsappCallback = async (
     let subscriptionOk = false;
 
     try {
-      subscriptionOk = await subscribeWabaWebhooks(
-        accessToken,
-        wabaId
-      );
+      subscriptionOk =
+        await subscribeWabaWebhooks(
+          accessToken,
+          wabaId
+        );
     } catch (err) {
       logger.error(
         "WhatsApp webhook subscription failed",
@@ -536,13 +574,15 @@ export const whatsappCallback = async (
      * The plaintext access token NEVER goes into the response
      * and is stored encrypted only.
      */
-    const tokenExpiresInSeconds = Number(token.expires_in);
+    const tokenExpiresInSeconds =
+      Number(token.expires_in);
 
     const tokenExpiresAt =
       Number.isFinite(tokenExpiresInSeconds) &&
       tokenExpiresInSeconds > 0
         ? new Date(
-            Date.now() + tokenExpiresInSeconds * 1000
+            Date.now() +
+              tokenExpiresInSeconds * 1000
           ).toISOString()
         : null;
 
@@ -628,13 +668,16 @@ export const whatsappCallback = async (
      *
      * Do NOT return the underlying error to the browser.
      */
-    logger.error("Failed to connect WhatsApp", err);
+    logger.error(
+      "Failed to connect WhatsApp",
+      err
+    );
 
     return redirectWithWhatsAppResult(
       res,
       "error",
       "connection_failed",
-      verifiedReturnTo
+      earlyReturnTo
     );
   }
 };
