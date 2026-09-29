@@ -116,6 +116,65 @@ export const getWhatsAppBusinessAccounts = async (
   }
 };
 
+export const diagnoseKnownWabaAccess = async (
+  accessToken: string
+): Promise<void> => {
+  const wabaId = "1342892884093874";
+
+  try {
+    const response = await axios.get(
+      `${GRAPH_URL}/${wabaId}`,
+      {
+        params: {
+          fields: "id,name,business_id",
+        },
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    logger.info("WhatsApp known WABA access diagnostic", {
+      wabaId,
+      graphVersion: GRAPH_VERSION,
+      httpStatus: response.status,
+      requestSucceeded: true,
+      returnedWabaId: response.data?.id ?? null,
+      returnedWabaName: response.data?.name ?? null,
+      returnedWabaBusinessId: response.data?.business_id ?? null,
+    });
+  } catch (err) {
+    const axiosError = err as {
+      response?: {
+        status?: number;
+        data?: {
+          error?: {
+            code?: number;
+            type?: string;
+            message?: string;
+          };
+        };
+      };
+    };
+
+    logger.error(
+      "WhatsApp known WABA access diagnostic failed",
+      undefined,
+      {
+        wabaId,
+        graphVersion: GRAPH_VERSION,
+        httpStatus: axiosError.response?.status ?? null,
+        metaErrorCode:
+          axiosError.response?.data?.error?.code ?? null,
+        metaErrorType:
+          axiosError.response?.data?.error?.type ?? null,
+        metaErrorMessage:
+          axiosError.response?.data?.error?.message ?? null,
+      }
+    );
+  }
+};
+
 export const getPhoneNumbers = async (
   wabaId: string,
   accessToken: string
