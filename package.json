@@ -12,6 +12,7 @@
     "migrate:encryption": "ts-node scripts/migrate-encryption.ts",
     "generate": "prisma generate",
     "seed:themes": "ts-node --project prisma/tsconfig.seed.json prisma/seed.themes.ts",
+    "seed:admin": "ts-node --project prisma/tsconfig.seed.json prisma/seed.admin.ts",
     "dev:infra": "docker compose up --build",
     "down:infra": "docker compose down",
     "logs:backend": "docker compose logs -f backend",
@@ -59,7 +60,8 @@
     "@types/bcrypt": "^6.0.0",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.5",
+    "@types/express": "^5
+.0.5",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.2.0",
     "@types/node": "^24.10.0",

@@ -111,7 +111,8 @@ model PasswordReset {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-model RefreshSession {
+model R
+efreshSession {
   id        Int       @id @default(autoincrement())
   userId    Int
   tokenHash String    @unique
@@ -135,6 +136,9 @@ model Seller {
   businessName String
   gstNumber    String?
   phone        String?
+
+  // Platform-level status managed from the admin panel.
+  status       String  @default("ACTIVE")
 
   onboardedAt  DateTime?
   industry     String?
@@ -185,7 +189,8 @@ model ChannelConnection {
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id])
 
-  platform Platform
+  platform Platfor
+m
 
   name String?
 
@@ -276,7 +281,8 @@ model Message {
   id Int @id @default(autoincrement())
 
   conversationId Int
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversation   Conversation @relation(fields: [conversati
+onId], references: [id], onDelete: Cascade)
 
   sender    MessageSender
   direction MessageDirection
@@ -362,7 +368,8 @@ model Customer {
   email String?
   phone String?
 
-  totalOrders Int   @default(0)
+  tota
+lOrders Int   @default(0)
   totalSpent  Float @default(0)
 
   lastOrderAt DateTime?
@@ -466,7 +473,8 @@ model Upload {
 // ─────────────────────────────────────────────
 
 model Notification {
-  id Int @id @default(autoincrement())
+  id Int @id @default(au
+toincrement())
 
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
@@ -577,7 +585,8 @@ model BuildJob {
 // ─────────────────────────────────────────────
 
 model ContactSubmission {
-  id Int @id @default(autoincrement())
+  id Int @id @defaul
+t(autoincrement())
 
   name    String
   email   String
@@ -624,4 +633,239 @@ model DeletionRequest {
   @@index([contactEmail])
   @@index([status])
   @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────
+// ADMIN PANEL
+// ─────────────────────────────────────────────
+
+enum AdminRole {
+  SUPER_ADMIN
+  ADMIN
+  SUPPORT
+}
+
+enum AdminAccountStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum TicketStatus {
+  OPEN
+  PENDING
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AnnouncementType {
+  GENERAL
+  MAINTENANCE
+  FEATURE
+  SECURITY
+}
+
+enum AnnouncementStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ContentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  SETTINGS
+}
+
+// Platform staff accounts. Completely separate from the
+// seller-facing User table: admin logins never mix with
+// seller/shop accounts.
+model AdminUser {
+  id           Int                @id @default(autoincrement())
+  email        String             @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         AdminRole          @default(SUPPORT)
+  status       AdminAccountStatus @default(ACTIVE)
+  avatarUrl    String?
+  lastLoginAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions        AdminSession[]
+  auditLogs       AuditLog[]
+  assignedTickets SupportTicket[]       @relation("TicketAssignee")
+  ticketMessages  TicketMessage[]       @relation("TicketMessageAuthor")
+}
+
+// Persisted admin refresh sessions. Only the SHA-256 hash
+// of the raw refresh token is stored, mirroring RefreshSession.
+model AdminSession {
+  id          Int    @id @default(autoincrement())
+  adminUserId Int
+  adminUser   AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
+
+  tokenHash String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([adminUserId])
+  @@index([expiresAt])
+  @@index([revokedAt])
+}
+
+// Support tickets handled from the admin panel.
+// sellerId / customerId are soft references kept as plain
+// integers so tickets survive seller-side data cleanup.
+model SupportTicket {
+  id           Int            @id @default(autoincrement())
+  ticketNumber String         @unique
+  subject      String
+  description  String?        @db.Text
+  status       TicketStatus   @default(OPEN)
+  priority     TicketPriority @default(MEDIUM)
+  category     String?
+
+  sellerId  Int?
+  customerId Int?
+
+  assignedToAdminId Int?
+  assignedTo        AdminUser?  @relation("TicketAssignee", fields: [assignedToAdminId], references: [id])
+
+  tags     String[]
+  messages TicketMessage[]
+
+  resolvedAt DateTime?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  @@index([status])
+  @@index([priority])
+  @@index([assignedToAdminId])
+  @@index([createdAt])
+}
+
+model TicketMessage {
+  id        Int           @id @default(autoincrement())
+  ticketId  Int
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  authorAdminId Int?
+  authorAdmin   AdminUser? @relation("TicketMessageAuthor", fields: [authorAdminId], references: [id])
+
+  body String @db.Text
+
+  isInternal Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([ticketId])
+}
+
+model Announcement {
+  id      Int    @id @default(autoincrement())
+  title   String
+  content String @db.Text
+
+  type   AnnouncementType   @default(GENERAL)
+  status AnnouncementStatus @default(DRAFT)
+
+  priority       TicketPriority @default(MEDIUM)
+  targetAudience String         @default("ALL")
+
+  startsAt DateTime?
+  endsAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([type])
+}
+
+model FAQItem {
+  id      Int    @id @default(autoincrement())
+  question String
+  answer  String @db.Text
+
+  category String   @default("General")
+  tags     String[]
+  order    Int      @default(0)
+
+  isPublished Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([category])
+  @@index([order])
+}
+
+// Editable static pages surfaced through the admin
+// Content screen (about, terms, privacy, etc.).
+model ContentPage {
+  id     Int    @id @default(autoincrement())
+  slug   String @unique
+  title  String
+  body   String @db.Text
+
+  status ContentStatus @default(DRAFT)
+
+  createdByAdminId Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Immutable trail of every privileged admin action.
+model AuditLog {
+  id          Int        @id @default(autoincrement())
+  adminUserId Int?
+  adminUser   AdminUser? @relation(fields: [adminUserId], references: [id])
+
+  action     AuditAction
+  entityType String?
+  entityId   String?
+
+  oldValue Json?
+  newValue Json?
+
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  @@index([adminUserId])
+  @@index([action])
+  @@index([entityType])
+  @@index([createdAt])
+}
+
+// Key/value store for admin panel settings and feature flags.
+model AdminSetting {
+  id    Int    @id @default(autoincrement())
+  key   String @unique
+  value Json
+
+  updatedAt DateTime @updatedAt
 }

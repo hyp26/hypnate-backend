@@ -33,6 +33,7 @@ import privacyRoutes from "./routes/privacy.routes";
 import channelRoutes from "./routes/channel.routes";
 import healthRoutes from "./routes/health.routes";
 import billingRoutes from "./routes/billing.routes";
+import adminRoutes from "./routes/admin.routes";
 
 
 // Webhooks
@@ -53,7 +54,8 @@ import { JWT_SECRET } from "./utils/jwtConfig";
 const app = express();
 
 /* ---------------- TRUST PROXY ---------------- */
-app.set("trust proxy", 1);
+app.
+set("trust proxy", 1);
 
 /* ---------------- CORS ----
 ------------ */
@@ -158,6 +160,11 @@ app.use(
   authLimiter
 );
 
+app.use(
+  "/api/admin/auth/login",
+  authLimiter
+);
+
 /* ---------------- ROUTES ---------------- */
 
 app.use(
@@ -166,7 +173,8 @@ app.use(
     windowMs: 60 * 1000,
     max: 20,
   }),
-  uploadRoutes
+  u
+ploadRoutes
 );
 
 app.use(
@@ -255,6 +263,13 @@ app.use(
   onboardingRoutes
 );
 
+/* ---------------- ADMIN PANEL ---------------- */
+
+app.use(
+  "/api/admin",
+  adminRoutes
+);
+
 /* ---------------- WEBHOOKS ---------------- */
 
 app.use(
@@ -319,7 +334,8 @@ const io = new Server(httpServer, {
           new Error("Not allowed by Socket.IO CORS")
         );
       }
-    },
+   
+ },
 
     credentials: true,
   },
@@ -427,6 +443,7 @@ io.use(async (socket, next) => {
       },
 
       select: {
+
         id: true,
         role: true,
         sellerId: true,
@@ -528,7 +545,8 @@ io.on("connection", (socket) => {
         );
       }
     }
-  );
+  
+);
 
   /*
    * Leave conversation room.
