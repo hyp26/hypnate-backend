@@ -24,6 +24,7 @@ import {
   getWhatsAppBusinessAccount,
   subscribeWabaWebhooks,
   unsubscribeWabaWebhooks,
+  diagnoseKnownWabaAccess,
 } from "../services/messaging/whatsapp.service";
 
 /* ----------------------------------------------------
@@ -489,10 +490,15 @@ export const whatsappCallback = async (
     }
 
     const accessToken = token.access_token;
+    try {
+      await diagnoseKnownWabaAccess(accessToken);
+    } catch {
+      // Diagnostic must never affect the OAuth flow.
+    }
 
     /*
-     * 2. Fetch Business Managers.
-     */
+    * 2. Fetch Business Managers.
+    */
     const businesses =
       await getBusinesses(accessToken);
 
