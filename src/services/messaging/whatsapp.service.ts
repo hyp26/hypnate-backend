@@ -2,6 +2,7 @@ import axios from "axios";
 import prisma from "../../prisma/client";
 import { decrypt } from "../crypto.service";
 import { ENV } from "../../config/env";
+import { logger } from "../../utils/logger";
 
 const GRAPH_VERSION =
   ENV.META_GRAPH_VERSION || "v25.0";
@@ -58,16 +59,61 @@ export const getWhatsAppBusinessAccounts = async (
   businessId: string,
   accessToken: string
 ) => {
-  const { data } = await axios.get(
-    `${GRAPH_URL}/${businessId}/owned_whatsapp_business_accounts`,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    }
-  );
+  try {
+    const { data } = await axios.get(
+      `${GRAPH_URL}/${businessId}/owned_whatsapp_business_accounts`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
 
-  return data.data;
+    logger.info("WhatsApp WABA discovery", {
+      businessId,
+      graphVersion: GRAPH_VERSION,
+      isArray: Array.isArray(data?.data),
+      count: Array.isArray(data?.data) ? data.data.length : 0,
+      wabas: Array.isArray(data?.data)
+        ? data.data.map(
+            (waba: { id?: string; name?: string }) => ({
+              id: waba?.id,
+              name: waba?.name,
+            })
+          )
+        : [],
+    });
+
+    return data.data;
+  } catch (err) {
+    const axiosError = err as {
+      response?: {
+        status?: number;
+        data?: {
+          error?: {
+            code?: number;
+            type?: string;
+            message?: string;
+          };
+        };
+      };
+    };
+
+    logger.error(
+      "WhatsApp WABA discovery failed",
+      undefined,
+      {
+        businessId,
+        httpStatus: axiosError.response?.status ?? null,
+        metaErrorCode: axiosError.response?.data?.error?.code ?? null,
+        metaErrorType: axiosError.response?.data?.error?.type ?? null,
+        metaErrorMessage:
+          axiosError.response?.data?.error?.message ?? null,
+      }
+    );
+
+    throw err;
+  }
 };
 
 export const getPhoneNumbers = async (
