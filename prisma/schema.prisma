@@ -111,8 +111,7 @@ model PasswordReset {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-model R
-efreshSession {
+model RefreshSession {
   id        Int       @id @default(autoincrement())
   userId    Int
   tokenHash String    @unique
@@ -138,7 +137,7 @@ model Seller {
   phone        String?
 
   // Platform-level status managed from the admin panel.
-  status       String  @default("ACTIVE")
+  status String @default("ACTIVE")
 
   onboardedAt  DateTime?
   industry     String?
@@ -189,8 +188,7 @@ model ChannelConnection {
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id])
 
-  platform Platfor
-m
+  platform Platform
 
   name String?
 
@@ -281,8 +279,7 @@ model Message {
   id Int @id @default(autoincrement())
 
   conversationId Int
-  conversation   Conversation @relation(fields: [conversati
-onId], references: [id], onDelete: Cascade)
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   sender    MessageSender
   direction MessageDirection
@@ -368,8 +365,7 @@ model Customer {
   email String?
   phone String?
 
-  tota
-lOrders Int   @default(0)
+  totalOrders Int   @default(0)
   totalSpent  Float @default(0)
 
   lastOrderAt DateTime?
@@ -473,8 +469,7 @@ model Upload {
 // ─────────────────────────────────────────────
 
 model Notification {
-  id Int @id @default(au
-toincrement())
+  id Int @id @default(autoincrement())
 
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
@@ -585,8 +580,7 @@ model BuildJob {
 // ─────────────────────────────────────────────
 
 model ContactSubmission {
-  id Int @id @defaul
-t(autoincrement())
+  id Int @id @default(autoincrement())
 
   name    String
   email   String
@@ -713,21 +707,21 @@ model AdminUser {
 
   sessions        AdminSession[]
   auditLogs       AuditLog[]
-  assignedTickets SupportTicket[]       @relation("TicketAssignee")
-  ticketMessages  TicketMessage[]       @relation("TicketMessageAuthor")
+  assignedTickets SupportTicket[] @relation("TicketAssignee")
+  ticketMessages  TicketMessage[] @relation("TicketMessageAuthor")
 }
 
 // Persisted admin refresh sessions. Only the SHA-256 hash
 // of the raw refresh token is stored, mirroring RefreshSession.
 model AdminSession {
-  id          Int    @id @default(autoincrement())
+  id          Int       @id @default(autoincrement())
   adminUserId Int
   adminUser   AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
 
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
   revokedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   @@index([adminUserId])
   @@index([expiresAt])
@@ -746,18 +740,18 @@ model SupportTicket {
   priority     TicketPriority @default(MEDIUM)
   category     String?
 
-  sellerId  Int?
+  sellerId   Int?
   customerId Int?
 
   assignedToAdminId Int?
-  assignedTo        AdminUser?  @relation("TicketAssignee", fields: [assignedToAdminId], references: [id])
+  assignedTo        AdminUser? @relation("TicketAssignee", fields: [assignedToAdminId], references: [id])
 
   tags     String[]
   messages TicketMessage[]
 
   resolvedAt DateTime?
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@index([status])
   @@index([priority])
@@ -766,9 +760,9 @@ model SupportTicket {
 }
 
 model TicketMessage {
-  id        Int           @id @default(autoincrement())
-  ticketId  Int
-  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  id       Int           @id @default(autoincrement())
+  ticketId Int
+  ticket   SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
 
   authorAdminId Int?
   authorAdmin   AdminUser? @relation("TicketMessageAuthor", fields: [authorAdminId], references: [id])
@@ -804,9 +798,9 @@ model Announcement {
 }
 
 model FAQItem {
-  id      Int    @id @default(autoincrement())
+  id       Int    @id @default(autoincrement())
   question String
-  answer  String @db.Text
+  answer   String @db.Text
 
   category String   @default("General")
   tags     String[]
@@ -824,10 +818,10 @@ model FAQItem {
 // Editable static pages surfaced through the admin
 // Content screen (about, terms, privacy, etc.).
 model ContentPage {
-  id     Int    @id @default(autoincrement())
-  slug   String @unique
-  title  String
-  body   String @db.Text
+  id    Int    @id @default(autoincrement())
+  slug  String @unique
+  title String
+  body  String @db.Text
 
   status ContentStatus @default(DRAFT)
 
