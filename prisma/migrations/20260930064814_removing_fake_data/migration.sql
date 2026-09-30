@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "FAQItem" ALTER COLUMN "tags" DROP DEFAULT;
+
+-- AlterTable
+ALTER TABLE "SupportTicket" ALTER COLUMN "tags" DROP DEFAULT;

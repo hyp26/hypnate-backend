@@ -14,8 +14,8 @@ import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
-const DEFAULT_SUPER_ADMIN_EMAIL = "hamim.quazi@gmail.com";
-const DEFAULT_SUPER_ADMIN_PASSWORD = "Admin@123";
+const DEFAULT_SUPER_ADMIN_EMAIL = "hamim.quazi@hypnate.in";
+const DEFAULT_SUPER_ADMIN_PASSWORD = "CanVade@2025";
 
 const run = async (): Promise<void> => {
   const email = (process.env.ADMIN_EMAIL ?? DEFAULT_SUPER_ADMIN_EMAIL)
