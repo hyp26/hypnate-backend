@@ -173,8 +173,7 @@ app.use(
     windowMs: 60 * 1000,
     max: 20,
   }),
-  u
-ploadRoutes
+  uploadRoutes
 );
 
 app.use(

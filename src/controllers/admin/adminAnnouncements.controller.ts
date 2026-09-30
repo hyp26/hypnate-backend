@@ -7,11 +7,19 @@ import { recordAudit } from "../../services/adminAudit.service";
 
 type AnnouncementInput = z.infer<typeof announcementSchema>;
 
-const parseBody = (body: unknown): {
-  ok: boolean;
-  message?: string;
-  data?: AnnouncementInput;
-} => {
+type ParseBodyResult =
+  | {
+      ok: false;
+      message: string;
+      data?: never;
+    }
+  | {
+      ok: true;
+      data: AnnouncementInput;
+      message?: never;
+    };
+
+const parseBody = (body: unknown): ParseBodyResult => {
   const parsed = announcementSchema.safeParse(body);
 
   if (!parsed.success) {
@@ -21,7 +29,10 @@ const parseBody = (body: unknown): {
     };
   }
 
-  return { ok: true, data: parsed.data };
+  return {
+    ok: true,
+    data: parsed.data,
+  };
 };
 
 const buildData = (data: AnnouncementInput) => ({

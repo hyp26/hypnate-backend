@@ -120,7 +120,7 @@ router.get(
 router.post(
   "/users",
   ...guard,
-  (req: AdminAuthRequest, res, next) => {
+  ((req: AdminAuthRequest, res, next) => {
     // Permission depends on the requested role, mirroring
     // the frontend store's rules.
     const role = (req.body?.role ?? "SUPPORT").toUpperCase();
@@ -128,7 +128,7 @@ router.post(
       role === "ADMIN" ? "CREATE_ADMIN" : "CREATE_SUPPORT";
 
     return requireAdminPermission(permission)(req, res, next);
-  } as RequestHandler,
+  }) as RequestHandler,
   adminHandler(createAdminAccount)
 );
 
