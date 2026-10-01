@@ -22,6 +22,11 @@ type WhatsAppMetadata = {
   phoneNumbers?: unknown;
 };
 
+type MetaPermissionEntry = {
+  permission?: string;
+  status?: string;
+};
+
 export const exchangeCodeForAccessToken = async (
   code: string
 ) => {
@@ -243,10 +248,12 @@ export const diagnoseOAuthTokenIdentity = async (
       httpStatus: response.status,
       requestSucceeded: true,
       permissions: Array.isArray(response.data?.data)
-        ? response.data.data.map((permission) => ({
-            permission: permission?.permission ?? null,
-            status: permission?.status ?? null,
-          }))
+        ? response.data.data.map(
+            (permission: MetaPermissionEntry) => ({
+              permission: permission?.permission ?? null,
+              status: permission?.status ?? null,
+            })
+          )
         : [],
     });
   } catch (err) {
