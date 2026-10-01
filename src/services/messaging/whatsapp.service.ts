@@ -175,6 +175,111 @@ export const diagnoseKnownWabaAccess = async (
   }
 };
 
+export const diagnoseOAuthTokenIdentity = async (
+  accessToken: string
+): Promise<void> => {
+  try {
+    const response = await axios.get(
+      `${GRAPH_URL}/me`,
+      {
+        params: {
+          fields: "id,name",
+        },
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    logger.info("WhatsApp OAuth token identity diagnostic", {
+      graphVersion: GRAPH_VERSION,
+      httpStatus: response.status,
+      requestSucceeded: true,
+      userId: response.data?.id ?? null,
+      userName: response.data?.name ?? null,
+    });
+  } catch (err) {
+    const axiosError = err as {
+      response?: {
+        status?: number;
+        data?: {
+          error?: {
+            code?: number;
+            type?: string;
+            message?: string;
+          };
+        };
+      };
+    };
+
+    logger.error(
+      "WhatsApp OAuth token identity diagnostic failed",
+      undefined,
+      {
+        graphVersion: GRAPH_VERSION,
+        httpStatus: axiosError.response?.status ?? null,
+        metaErrorCode:
+          axiosError.response?.data?.error?.code ?? null,
+        metaErrorType:
+          axiosError.response?.data?.error?.type ?? null,
+        metaErrorMessage:
+          axiosError.response?.data?.error?.message ?? null,
+      }
+    );
+  }
+
+  try {
+    const response = await axios.get(
+      `${GRAPH_URL}/me/permissions`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    logger.info("WhatsApp OAuth token permissions diagnostic", {
+      graphVersion: GRAPH_VERSION,
+      httpStatus: response.status,
+      requestSucceeded: true,
+      permissions: Array.isArray(response.data?.data)
+        ? response.data.data.map((permission) => ({
+            permission: permission?.permission ?? null,
+            status: permission?.status ?? null,
+          }))
+        : [],
+    });
+  } catch (err) {
+    const axiosError = err as {
+      response?: {
+        status?: number;
+        data?: {
+          error?: {
+            code?: number;
+            type?: string;
+            message?: string;
+          };
+        };
+      };
+    };
+
+    logger.error(
+      "WhatsApp OAuth token permissions diagnostic failed",
+      undefined,
+      {
+        graphVersion: GRAPH_VERSION,
+        httpStatus: axiosError.response?.status ?? null,
+        metaErrorCode:
+          axiosError.response?.data?.error?.code ?? null,
+        metaErrorType:
+          axiosError.response?.data?.error?.type ?? null,
+        metaErrorMessage:
+          axiosError.response?.data?.error?.message ?? null,
+      }
+    );
+  }
+};
+
 export const getPhoneNumbers = async (
   wabaId: string,
   accessToken: string

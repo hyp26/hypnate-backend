@@ -25,6 +25,7 @@ import {
   subscribeWabaWebhooks,
   unsubscribeWabaWebhooks,
   diagnoseKnownWabaAccess,
+  diagnoseOAuthTokenIdentity,
 } from "../services/messaging/whatsapp.service";
 
 /* ----------------------------------------------------
@@ -492,6 +493,12 @@ export const whatsappCallback = async (
     const accessToken = token.access_token;
     try {
       await diagnoseKnownWabaAccess(accessToken);
+    } catch {
+      // Diagnostic must never affect the OAuth flow.
+    }
+
+    try {
+      await diagnoseOAuthTokenIdentity(accessToken);
     } catch {
       // Diagnostic must never affect the OAuth flow.
     }
