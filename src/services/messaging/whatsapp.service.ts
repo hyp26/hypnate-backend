@@ -27,6 +27,19 @@ type MetaPermissionEntry = {
   status?: string;
 };
 
+type MetaGranularScope = {
+  scope?: string;
+  target_ids?: unknown;
+};
+
+type MetaDebugTokenData = {
+  is_valid?: boolean;
+  app_id?: string | number;
+  user_id?: string | number;
+  scopes?: unknown;
+  granular_scopes?: unknown;
+};
+
 export const exchangeCodeForAccessToken = async (
   code: string
 ) => {
@@ -272,6 +285,137 @@ export const diagnoseOAuthTokenIdentity = async (
 
     logger.error(
       "WhatsApp OAuth token permissions diagnostic failed",
+      undefined,
+      {
+        graphVersion: GRAPH_VERSION,
+        httpStatus: axiosError.response?.status ?? null,
+        metaErrorCode:
+          axiosError.response?.data?.error?.code ?? null,
+        metaErrorType:
+          axiosError.response?.data?.error?.type ?? null,
+        metaErrorMessage:
+          axiosError.response?.data?.error?.message ?? null,
+      }
+    );
+  }
+};
+
+export const diagnoseOAuthTokenScopes = async (
+  accessToken: string
+): Promise<void> => {
+  try {
+    /*
+     * TEMPORARY DIAGNOSTIC ONLY (token granular scopes).
+     *
+     * /debug_token is authorized with the app access token built
+     * from the existing META_APP_ID and META_APP_SECRET. Neither
+     * credential, nor the inspected token, is ever logged.
+     */
+    const appAccessToken =
+      `${ENV.META_APP_ID}|${ENV.META_APP_SECRET}`;
+
+    const response = await axios.get(
+      `${GRAPH_URL}/debug_token`,
+      {
+        params: {
+          input_token: accessToken,
+        },
+        headers: {
+          Authorization: `Bearer ${appAccessToken}`,
+        },
+      }
+    );
+
+    const data =
+      (response.data?.data ?? {}) as MetaDebugTokenData;
+
+    const scopes = Array.isArray(data.scopes)
+      ? data.scopes.map(
+          (scope: unknown) => String(scope)
+        )
+      : [];
+
+    const granularScopes = Array.isArray(
+      data.granular_scopes
+    )
+      ? data.granular_scopes.map(
+          (entry: MetaGranularScope) => ({
+            scope:
+              typeof entry?.scope === "string"
+                ? entry.scope
+                : null,
+            targetIds: Array.isArray(entry?.target_ids)
+              ? entry.target_ids.map(
+                  (targetId: unknown) => String(targetId)
+                )
+              : [],
+          })
+        )
+      : [];
+
+    const knownWabaId = "1342892884093874";
+
+    const whatsappManagementEntry = granularScopes.find(
+      (entry) =>
+        entry.scope === "whatsapp_business_management"
+    );
+
+    const knownWabaGranted =
+      !!whatsappManagementEntry &&
+      whatsappManagementEntry.targetIds.includes(knownWabaId);
+
+    logger.info("WhatsApp OAuth token scopes diagnostic", {
+      graphVersion: GRAPH_VERSION,
+      httpStatus: response.status,
+      requestSucceeded: true,
+      isValid: data.is_valid ?? null,
+      appId:
+        data.app_id !== undefined
+          ? String(data.app_id)
+          : null,
+      userId:
+        data.user_id !== undefined
+          ? String(data.user_id)
+          : null,
+      scopes,
+      granularScopes,
+      granularScopesPresent: Array.isArray(
+        data.granular_scopes
+      ),
+      whatsappBusinessManagementTargetIds:
+        whatsappManagementEntry?.targetIds ?? [],
+      knownWabaGranted,
+      /*
+       * Safe response-shape hints in case Meta returns a
+       * different structure: top-level field names and value
+       * types only. Never values.
+       */
+      shapeDataKeys: Object.keys(data),
+      shapeGranularScopesType: Array.isArray(
+        data.granular_scopes
+      )
+        ? "array"
+        : typeof data.granular_scopes,
+      shapeScopesType: Array.isArray(data.scopes)
+        ? "array"
+        : typeof data.scopes,
+    });
+  } catch (err) {
+    const axiosError = err as {
+      response?: {
+        status?: number;
+        data?: {
+          error?: {
+            code?: number;
+            type?: string;
+            message?: string;
+          };
+        };
+      };
+    };
+
+    logger.error(
+      "WhatsApp OAuth token scopes diagnostic failed",
       undefined,
       {
         graphVersion: GRAPH_VERSION,
