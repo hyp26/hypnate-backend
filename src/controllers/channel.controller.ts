@@ -6,6 +6,7 @@ import prisma from "../prisma/client";
 import { AuthRequest } from "../middleware/authMiddleware";
 import { encrypt, decrypt } from "../services/crypto.service";
 import { logger } from "../utils/logger";
+import { AppError } from "../utils/AppError";
 import { ENV } from "../config/env";
 import {
   buildWhatsAppResultRedirectUrl,
@@ -19,7 +20,7 @@ import type { WhatsAppOAuthReturnTo } from "../utils/whatsapp-oauth-state";
 import {
   exchangeCodeForAccessToken,
   getBusinesses,
-  getWhatsAppBusinessAccounts,
+  getGrantedWabaIdsFromToken,
   getPhoneNumbers,
   getWhatsAppBusinessAccount,
   subscribeWabaWebhooks,
@@ -531,31 +532,51 @@ export const whatsappCallback = async (
     const business = businesses[0];
 
     /*
-     * 3. Fetch WhatsApp Business Accounts.
+     * 3. Discover the WhatsApp Business Accounts granted
+     *    to this OAuth token.
+     *
+     * The login dialog issues an asset-scoped token, so the
+     * granted WABA is read from the token's granular scopes
+     * via /debug_token instead of a business management
+     * endpoint (those require a system user token).
      */
-    const wabas =
-      await getWhatsAppBusinessAccounts(
-        String(business.id),
-        accessToken
-      );
+    let grantedWabaIds: string[];
 
-    if (
-      !Array.isArray(wabas) ||
-      !wabas.length
-    ) {
-      return redirectWithWhatsAppResult(
-        res,
-        "error",
-        "no_whatsapp_account",
-        verifiedReturnTo
-      );
+    try {
+      grantedWabaIds =
+        await getGrantedWabaIdsFromToken(
+          accessToken
+        );
+    } catch (err) {
+      if (err instanceof AppError) {
+        return redirectWithWhatsAppResult(
+          res,
+          "error",
+          "no_whatsapp_account",
+          verifiedReturnTo
+        );
+      }
+
+      throw err;
     }
 
-    const whatsappBusiness = wabas[0];
+    /*
+     * The product currently supports a single WhatsApp
+     * connection per seller, so the first granted WABA is
+     * used. All granted IDs are kept for future
+     * multi-WABA support.
+     */
+    const wabaId = grantedWabaIds[0];
 
-    const wabaId = String(
-      whatsappBusiness.id
-    );
+    /*
+     * Fetch the selected WABA so the connection keeps its
+     * name.
+     */
+    const whatsappBusiness =
+      await getWhatsAppBusinessAccount(
+        accessToken,
+        wabaId
+      );
 
     /*
      * 4. Fetch phone numbers.
