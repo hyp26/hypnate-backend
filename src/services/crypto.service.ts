@@ -61,13 +61,22 @@ export const decrypt = (encryptedText: string): string => {
 };
 
 const decryptGcm = (encryptedText: string): string => {
+  /*
+   * The GCM prefix ("gcm:v1") itself contains a colon, so
+   * the serialized value splits into 5 parts:
+   *
+   * ["gcm", "v1", ivHex, authTagHex, ciphertextHex]
+   */
   const parts = encryptedText.split(":");
 
-  if (parts.length !== 4 || parts[0] !== GCM_PREFIX) {
+  if (
+    parts.length !== 5 ||
+    `${parts[0]}:${parts[1]}` !== GCM_PREFIX
+  ) {
     throw new Error("Invalid encrypted value format");
   }
 
-  const [, ivHex, authTagHex, ciphertextHex] = parts;
+  const [, , ivHex, authTagHex, ciphertextHex] = parts;
 
   const iv = Buffer.from(ivHex, "hex");
   const authTag = Buffer.from(authTagHex, "hex");
