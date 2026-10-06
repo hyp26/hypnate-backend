@@ -3,6 +3,7 @@ import prisma from "../../prisma/client";
 import { decrypt } from "../crypto.service";
 import { ENV } from "../../config/env";
 import { logger } from "../../utils/logger";
+import { AppError } from "../../utils/AppError";
 
 const GRAPH_VERSION =
   ENV.META_GRAPH_VERSION || "v25.0";
@@ -428,6 +429,136 @@ export const diagnoseOAuthTokenScopes = async (
           axiosError.response?.data?.error?.message ?? null,
       }
     );
+  }
+};
+
+/*
+ * Discover the WhatsApp Business Accounts granted to an
+ * OAuth access token.
+ *
+ * The WhatsApp login dialog issues an asset-scoped token: the
+ * granted WABA appears in the token's granular scopes
+ * (whatsapp_business_management.target_ids). Business
+ * management endpoints such as
+ * /{business-id}/owned_whatsapp_business_accounts are NOT
+ * usable with these tokens, so this is the discovery path for
+ * the OAuth callback.
+ *
+ * Returns every granted WABA ID, deduplicated, preserving
+ * Meta's ordering. Throws AppError when no WABA was granted
+ * to the token so the OAuth callback can follow its existing
+ * failure path.
+ */
+export const getGrantedWabaIdsFromToken = async (
+  accessToken: string
+): Promise<string[]> => {
+  /*
+   * /debug_token is authorized with the app access token
+   * built from the existing META_APP_ID and META_APP_SECRET.
+   * Neither credential, nor the inspected token, is ever
+   * logged.
+   */
+  const appAccessToken =
+    `${ENV.META_APP_ID}|${ENV.META_APP_SECRET}`;
+
+  try {
+    const { data } = await axios.get(
+      `${GRAPH_URL}/debug_token`,
+      {
+        params: {
+          input_token: accessToken,
+        },
+        headers: {
+          Authorization: `Bearer ${appAccessToken}`,
+        },
+      }
+    );
+
+    const tokenData =
+      (data?.data ?? {}) as MetaDebugTokenData;
+
+    const granularScopes = Array.isArray(
+      tokenData.granular_scopes
+    )
+      ? tokenData.granular_scopes
+      : [];
+
+    const whatsappManagementEntry = granularScopes.find(
+      (entry: MetaGranularScope) =>
+        entry?.scope ===
+        "whatsapp_business_management"
+    );
+
+    const targetIds = Array.isArray(
+      whatsappManagementEntry?.target_ids
+    )
+      ? whatsappManagementEntry.target_ids
+      : [];
+
+    /*
+     * Keep only non-empty string IDs, deduplicated, in
+     * Meta's original order.
+     */
+    const grantedWabaIds: string[] = [];
+
+    targetIds.forEach((targetId: unknown) => {
+      if (
+        typeof targetId === "string" &&
+        targetId.length > 0 &&
+        !grantedWabaIds.includes(targetId)
+      ) {
+        grantedWabaIds.push(targetId);
+      }
+    });
+
+    logger.info("WhatsApp WABA discovery", {
+      graphVersion: GRAPH_VERSION,
+      grantedWabaIds,
+      grantedWabaCount: grantedWabaIds.length,
+    });
+
+    if (!grantedWabaIds.length) {
+      throw new AppError(
+        "No WhatsApp Business Account was granted to this OAuth token",
+        400
+      );
+    }
+
+    return grantedWabaIds;
+  } catch (err) {
+    if (err instanceof AppError) {
+      throw err;
+    }
+
+    const axiosError = err as {
+      response?: {
+        status?: number;
+        data?: {
+          error?: {
+            code?: number;
+            type?: string;
+            message?: string;
+          };
+        };
+      };
+    };
+
+    logger.error(
+      "WhatsApp WABA discovery failed",
+      undefined,
+      {
+        graphVersion: GRAPH_VERSION,
+        httpStatus: axiosError.response?.status ?? null,
+        metaErrorCode:
+          axiosError.response?.data?.error?.code ?? null,
+        metaErrorType:
+          axiosError.response?.data?.error?.type ?? null,
+        metaErrorMessage:
+          axiosError.response?.data?.error?.message ?? null,
+      }
+    );
+
+    throw err;
   }
 };
 
