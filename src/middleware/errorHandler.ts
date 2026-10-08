@@ -14,11 +14,12 @@ export const errorHandler = (
   });
 
   const statusCode =
-    typeof err === "object" &&
-    err !== null &&
-    "statusCode" in err &&
-    typeof (err as { statusCode?: unknown }).statusCode === "number"
-      ? (err as { statusCode: number }).statusCode
+    typeof err === "object" && err !== null
+      ? typeof (err as { statusCode?: unknown }).statusCode === "number"
+        ? (err as { statusCode: number }).statusCode
+        : typeof (err as { status?: unknown }).status === "number"
+          ? (err as { status: number }).status
+          : 500
       : 500;
 
   const message =

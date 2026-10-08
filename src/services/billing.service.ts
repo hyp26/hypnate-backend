@@ -12,7 +12,16 @@ export function getPlanAccess(seller: any) {
   const activePlan = normalizePlan(seller?.activePlan);
   const status = String(seller?.planStatus || "").toUpperCase();
   const periodEnd = seller?.planCurrentPeriodEnd ? new Date(seller.planCurrentPeriodEnd) : null;
-  const paidAccess = !!activePlan && ["ACTIVE", "PENDING", "CANCELLED"].includes(status) && (!periodEnd || periodEnd > now);
+  // Only a genuinely ACTIVE subscription grants paid access.
+  // CANCELLED may retain access only for an already-paid period
+  // that is still in the future (activation happened earlier).
+  // CREATED / AUTHENTICATED / PENDING / HALTED / COMPLETED /
+  // EXPIRED never grant paid access.
+  const previouslyActivated = !!seller?.planActivatedAt;
+  const paidAccess = !!activePlan && (
+    (status === "ACTIVE" && (!periodEnd || periodEnd > now)) ||
+    (status === "CANCELLED" && previouslyActivated && !!periodEnd && periodEnd > now)
+  );
   if (paidAccess) return { hasAccess: true, source: "paid" as const, plan: activePlan, status, trialEndsAt: null, planCurrentPeriodEnd: periodEnd };
   const trialPlan = normalizePlan(seller?.trialPlan);
   const trialEndsAt = seller?.trialEndsAt ? new Date(seller.trialEndsAt) : null;
@@ -62,12 +71,32 @@ export async function createSubscriptionForSeller({ sellerId, planValue, cycleVa
   const access = getPlanAccess(seller);
   if (access.source === "paid" && access.plan === plan) { const e = new Error("This plan is already active on the account"); (e as any).status = 409; throw e; }
 
+  const amount = PLAN_PRICES_INR[plan][cycle];
+
   if (seller.razorpaySubscriptionId) {
-    const old = await razorpay<any>(`/subscriptions/${seller.razorpaySubscriptionId}`);
-    if (["created", "authenticated", "active", "pending"].includes(String(old.status))) { const e = new Error("A Razorpay subscription is already pending or active"); (e as any).status = 409; throw e; }
+    // Fetch the current Razorpay state of the referenced
+    // subscription. A stale/unreadable reference must not block
+    // checkout: it is simply replaced by the fresh subscription
+    // created below.
+    const old = await razorpay<any>(`/subscriptions/${seller.razorpaySubscriptionId}`).catch(() => null);
+    const oldStatus = String(old?.status || "").toLowerCase();
+
+    // A genuinely active subscription must never be duplicated.
+    if (oldStatus === "active") { const e = new Error("A Razorpay subscription is already active"); (e as any).status = 409; throw e; }
+
+    // Abandoned / unpaid checkout (created / authenticated /
+    // pending) must not grant access and must not block retry.
+    // Reuse the same unfinished subscription when it matches the
+    // selected plan and cycle, so the merchant can retry safely.
+    if (["created", "authenticated", "pending"].includes(oldStatus) && old?.plan_id === razorpayPlanId) {
+      return { keyId: ENV.RAZORPAY_KEY_ID, subscriptionId: String(old.id), plan, billingCycle: cycle, amount, currency: "INR", customer };
+    }
+    // Any other stale reference (different plan/cycle, cancelled,
+    // expired, or no longer readable in Razorpay) falls through:
+    // a fresh subscription is created and the stored reference is
+    // overwritten below.
   }
 
-  const amount = PLAN_PRICES_INR[plan][cycle];
   const subscription = await razorpay<any>("/subscriptions", { method: "POST", body: JSON.stringify({
     plan_id: razorpayPlanId, total_count: cycle === "monthly" ? 120 : 10, quantity: 1, customer_notify: true,
     notes: { seller_id: String(sellerId), hypnate_plan: plan, billing_cycle: cycle, amount_inr: String(amount) },
