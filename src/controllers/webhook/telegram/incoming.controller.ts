@@ -22,6 +22,16 @@ import { logger } from "../../../utils/logger";
  *   claim therefore cannot persist message data, increment unreadCount,
  *   or mark the claim PROCESSED — its transaction rolls back.
  *
+ * Conflict-safe message persistence:
+ * - Inbound messages are inserted with createMany + skipDuplicates, NOT
+ *   create + P2002 catch. A unique-constraint violation inside an
+ *   interactive Prisma transaction aborts the whole transaction in
+ *   PostgreSQL, so the previous catch-based approach left the tx unusable
+ *   and any later statement would fail. skipDuplicates resolves the
+ *   conflict inside the INSERT itself; the returned count tells us
+ *   whether THIS delivery inserted the row, and unreadCount is only
+ *   incremented when it did.
+ *
  * Non-text Telegram messages: only a textual placeholder like
  * "[Telegram photo message]" is persisted (mirroring the WhatsApp
  * convention). Media files are NOT downloaded, stored, or referenced —
@@ -73,6 +83,19 @@ export type TelegramClaimAcquisition =
   | "owned"
   | "duplicate"
   | "busy";
+
+/*
+ * Observable outcome of a terminal (PROCESSED/FAILED) transition:
+ * - "marked": the fenced UPDATE matched our row; state is durable.
+ * - "lost": the fenced UPDATE matched zero rows; another worker owns
+ *   the claim now and we must not touch its state.
+ * - "db_error": the transition could not be persisted; the response
+ *   must be retryable, never a success.
+ */
+export type TerminalTransitionResult =
+  | "marked"
+  | "lost"
+  | "db_error";
 
 const KNOWN_UPDATE_KEYS = [
   "message",
@@ -288,6 +311,7 @@ export function ownsClaim(
  * conditional UPDATE, so exactly the first eligible worker owns the
  * claim; every later worker observes a fresh PROCESSING row owned by
  * the winner and backs off. This mirrors the updateMany count check.
+ * (Supplementary coverage — the DB test file proves the real behavior.)
  */
 export function simulateReclaimRace(
   existing: TelegramClaimRecord,
@@ -319,6 +343,7 @@ export function simulateReclaimRace(
  * Pure model of repeated deliveries after success: once PROCESSED, no
  * delivery can ever reacquire the claim, so no message is persisted,
  * unreadCount is not incremented, and no socket event repeats.
+ * (Supplementary coverage — the DB test file proves the real behavior.)
  */
 export function countEffectsAfterProcessed(
   deliveries: number
@@ -357,7 +382,7 @@ function isBotMessage(
  * unreadCount increment, or PROCESSED marker from the expired worker
  * survives.
  */
-class ClaimLostError extends Error {
+export class ClaimLostError extends Error {
   constructor() {
     super("Telegram webhook claim was reclaimed by another worker");
     this.name = "ClaimLostError";
@@ -365,9 +390,10 @@ class ClaimLostError extends Error {
 }
 
 /*
- * Minimal structural type satisfied by both the root Prisma client and
- * an interactive transaction client. The argument is typed `any` so the
- * generated delegate signatures accept it in either position.
+ * Minimal structural types satisfied by both the root Prisma client
+ * and an interactive transaction client. Delegates are typed `any` so
+ * the generated client signatures accept these in either position,
+ * and so tests can inject failures.
  */
 type LedgerClient = {
   telegramWebhookUpdate: {
@@ -375,12 +401,19 @@ type LedgerClient = {
   };
 };
 
+type TxClient = {
+  conversation: any;
+  message: any;
+  telegramWebhookUpdate: any;
+};
+
 /*
  * Atomically acquire (create or reclaim) the claim for one delivery.
  * Returns the acquisition outcome plus the token that fences all
- * subsequent state transitions for this attempt.
+ * subsequent state transitions for this attempt. Exported for
+ * database-backed tests.
  */
-async function acquireClaim(
+export async function acquireClaim(
   sellerId: number,
   updateId: number,
   now: Date
@@ -461,9 +494,10 @@ async function acquireClaim(
  * Fenced transition to a terminal state. Matches the claim token, so
  * it only succeeds while THIS attempt still owns the claim. Returns
  * false when the claim was lost — callers inside a transaction must
- * then roll back by throwing ClaimLostError.
+ * then roll back by throwing ClaimLostError. Propagates database
+ * errors instead of swallowing them. Exported for database tests.
  */
-async function fencedTransition(
+export async function fencedTransition(
   tx: LedgerClient,
   sellerId: number,
   updateId: number,
@@ -483,23 +517,253 @@ async function fencedTransition(
   return result.count === 1;
 }
 
-async function fencedTransitionBestEffort(
+/*
+ * Observable terminal transition for paths outside a transaction
+ * (bot / unsupported / defensive fallbacks / failure marking).
+ * Never silently swallows a database error:
+ * - "marked"  → the state is durably saved; acknowledge.
+ * - "lost"    → another worker owns the claim; do not touch its state.
+ * - "db_error"→ the terminal state may not be saved; respond 500 so
+ *   Telegram retries. Re-running these paths is idempotent (they have
+ *   no side effects beyond the ledger row), so a retry is always safe.
+ */
+async function markTerminal(
   sellerId: number,
   updateId: number,
   claimToken: string,
   status: "PROCESSED" | "FAILED"
-): Promise<void> {
+): Promise<TerminalTransitionResult> {
   try {
-    await fencedTransition(
+    const marked = await fencedTransition(
       prisma,
       sellerId,
       updateId,
       claimToken,
       status
     );
-  } catch {
-    // Best effort only: the webhook response must not depend on it.
+
+    return marked ? "marked" : "lost";
+  } catch (err) {
+    logger.error(
+      "Telegram webhook: terminal claim transition failed",
+      { sellerId, updateId, status, err }
+    );
+
+    return "db_error";
   }
+}
+
+export interface PersistInboundMessageParams {
+  sellerId: number;
+  updateId: number;
+  updateType: string;
+  claimToken: string;
+  message: TelegramInboundMessage;
+  externalThreadId: string;
+  now: Date;
+}
+
+export type PersistInboundMessageResult =
+  | { duplicate: true }
+  | {
+      duplicate: false;
+      newMessage: {
+        id: number;
+        text: string;
+        createdAt: Date;
+      };
+      updatedConversation: {
+        id: number;
+        unreadCount: number;
+      };
+    };
+
+/*
+ * Conflict-safe persistence of one inbound Telegram message inside a
+ * transaction (also callable on the root client). Uses createMany with
+ * skipDuplicates: a duplicate (conversationId, externalMessageId) is
+ * resolved by the INSERT itself instead of aborting the transaction
+ * with P2002, which would leave an interactive Prisma transaction
+ * unusable. unreadCount is incremented only when the INSERT reports
+ * that THIS delivery inserted the row, and the fenced PROCESSED flip
+ * happens in the same transaction. Exported for database tests.
+ */
+export async function persistInboundMessage(
+  tx: TxClient,
+  params: PersistInboundMessageParams
+): Promise<PersistInboundMessageResult> {
+  const {
+    sellerId,
+    updateId,
+    updateType,
+    claimToken,
+    message,
+    externalThreadId,
+    now,
+  } = params;
+
+  const conversation = await tx.conversation.upsert({
+    where: {
+      sellerId_platform_externalUserId_externalThreadId: {
+        sellerId,
+        platform: "TELEGRAM",
+        externalUserId: message.chatId,
+        externalThreadId,
+      },
+    },
+    create: {
+      sellerId,
+      platform: "TELEGRAM",
+      externalUserId: message.chatId,
+      externalThreadId,
+      customerName: message.senderName,
+      lastMessage: message.text,
+      lastMessageAt: now,
+    },
+    update: {},
+  });
+
+  const inserted = await tx.message.createMany({
+    data: {
+      conversationId: conversation.id,
+      sender: "CUSTOMER",
+      direction: "INBOUND",
+      status: "SENT",
+      text: message.text,
+      type: message.messageType,
+      externalMessageId: message.messageId,
+      metadata: {
+        telegramUpdateId: updateId,
+        telegramUpdateType: updateType,
+      },
+    },
+    skipDuplicates: true,
+  });
+
+  if (inserted.count === 0) {
+    /*
+     * The message unique index (conversationId, externalMessageId)
+     * already holds this content (e.g. a different Telegram update
+     * delivering the same message_id, or a legacy row). The
+     * transaction is still healthy; finish it by marking PROCESSED
+     * without incrementing unreadCount.
+     */
+    const fenced = await fencedTransition(
+      tx,
+      sellerId,
+      updateId,
+      claimToken,
+      "PROCESSED"
+    );
+
+    if (!fenced) {
+      throw new ClaimLostError();
+    }
+
+    return { duplicate: true };
+  }
+
+  const newMessage = await tx.message.findUnique({
+    where: {
+      conversationId_externalMessageId: {
+        conversationId: conversation.id,
+        externalMessageId: message.messageId,
+      },
+    },
+  });
+
+  const updatedConversation = await tx.conversation.update({
+    where: { id: conversation.id },
+    data: {
+      lastMessage: message.text,
+      lastMessageAt: now,
+      unreadCount: { increment: 1 },
+    },
+  });
+
+  const fenced = await fencedTransition(
+    tx,
+    sellerId,
+    updateId,
+    claimToken,
+    "PROCESSED"
+  );
+
+  if (!fenced) {
+    throw new ClaimLostError();
+  }
+
+  return {
+    duplicate: false,
+    newMessage,
+    updatedConversation,
+  };
+}
+
+/*
+ * Response policy for a processing failure. Distinguishes:
+ * - "acknowledge" (HTTP 200): our claim was taken over by another
+ *   worker; our writes rolled back and the new owner is responsible.
+ * - "retry" (HTTP 500): the work was NOT persisted (including an
+ *   unexpected unique-constraint error that aborted the transaction).
+ *   The claim is marked FAILED through a fenced transition so we never
+ *   overwrite another worker's claim, and Telegram retries safely.
+ *   If even the FAILED marking fails, the row stays PROCESSING until
+ *   the stale window passes, after which reclamation is still safe —
+ *   but we still respond 500 because success must never be reported
+ *   for a message that was not persisted.
+ * Exported for database tests.
+ */
+export async function handleProcessingFailure(
+  sellerId: number,
+  updateId: number,
+  claimToken: string,
+  err: unknown
+): Promise<"acknowledge" | "retry"> {
+  if (err instanceof ClaimLostError) {
+    return "acknowledge";
+  }
+
+  if (isUniqueConstraintViolation(err)) {
+    /*
+     * Unexpected unique-constraint error that escaped the transaction:
+     * the transaction rolled back and NOTHING was persisted. This is
+     * NOT a confirmed duplicate — respond retryably, never 200.
+     */
+    logger.warn(
+      "Telegram webhook: unexpected unique-constraint error; transaction rolled back",
+      { sellerId, updateId }
+    );
+  } else {
+    logger.error(
+      "Telegram incoming webhook processing failed:",
+      err
+    );
+  }
+
+  if (claimToken) {
+    /*
+     * Fenced FAILED marking: only succeeds while we still own the
+     * claim, so a reclaimer's PROCESSING state can never be
+     * overwritten. A DB error here is logged, not thrown — the
+     * response policy below is unchanged either way.
+     */
+    const marked = await markTerminal(
+      sellerId,
+      updateId,
+      claimToken,
+      "FAILED"
+    );
+
+    if (marked === "db_error") {
+      logger.error(
+        "Telegram webhook: FAILED marking also failed; claim remains PROCESSING and is reclaimable after the stale window",
+        { sellerId, updateId }
+      );
+    }
+  }
+
+  return "retry";
 }
 
 export const telegramWebhook = async (
@@ -552,24 +816,37 @@ export const telegramWebhook = async (
     }
 
     if (isBotMessage(update)) {
-      // Bot messages are ignored, but still acknowledged idempotently.
-      await fencedTransitionBestEffort(
+      /*
+       * Bot messages are ignored, but the acknowledgment is
+       * observable: only report 200 when the PROCESSED state was
+       * actually saved (or the claim was taken over by the new
+       * owner, who will finish it).
+       */
+      const marked = await markTerminal(
         sellerId,
         updateId,
         claimToken,
         "PROCESSED"
       );
+
+      if (marked === "db_error") {
+        return res.sendStatus(500);
+      }
 
       return res.sendStatus(200);
     }
 
     if (update.kind === "unsupported") {
-      await fencedTransitionBestEffort(
+      const marked = await markTerminal(
         sellerId,
         updateId,
         claimToken,
         "PROCESSED"
       );
+
+      if (marked === "db_error") {
+        return res.sendStatus(500);
+      }
 
       logger.info(
         "Telegram webhook: acknowledged unsupported update",
@@ -582,12 +859,16 @@ export const telegramWebhook = async (
     const message = update.message;
 
     if (!message) {
-      await fencedTransitionBestEffort(
+      const marked = await markTerminal(
         sellerId,
         updateId,
         claimToken,
         "PROCESSED"
       );
+
+      if (marked === "db_error") {
+        return res.sendStatus(500);
+      }
 
       return res.sendStatus(200);
     }
@@ -663,105 +944,17 @@ export const telegramWebhook = async (
      * worker can neither persist the message nor increment
      * unreadCount after losing its claim.
      */
-    const result = await prisma.$transaction(async (tx) => {
-      const conversation = await tx.conversation.upsert({
-        where: {
-          sellerId_platform_externalUserId_externalThreadId: {
-            sellerId,
-            platform: "TELEGRAM",
-            externalUserId: message.chatId,
-            externalThreadId,
-          },
-        },
-        create: {
-          sellerId,
-          platform: "TELEGRAM",
-          externalUserId: message.chatId,
-          externalThreadId,
-          customerName: message.senderName,
-          lastMessage: message.text,
-          lastMessageAt: now,
-        },
-        update: {},
-      });
-
-      let newMessage;
-
-      let duplicate = false;
-
-      try {
-        newMessage = await tx.message.create({
-          data: {
-            conversationId: conversation.id,
-            sender: "CUSTOMER",
-            direction: "INBOUND",
-            status: "SENT",
-            text: message.text,
-            type: message.messageType,
-            externalMessageId: message.messageId,
-            metadata: {
-              telegramUpdateId: updateId,
-              telegramUpdateType: update.updateType,
-            },
-          },
-        });
-      } catch (err) {
-        if (!isUniqueConstraintViolation(err)) {
-          throw err;
-        }
-
-        /*
-         * The message unique index (conversationId, externalMessageId)
-         * already persisted this content (e.g. a different Telegram
-         * update delivering the same message_id, or a legacy row).
-         * Do not increment unreadCount or emit events; acknowledge.
-         */
-        duplicate = true;
-      }
-
-      if (duplicate) {
-        const fenced = await fencedTransition(
-          tx,
-          sellerId,
-          updateId,
-          claimToken,
-          "PROCESSED"
-        );
-
-        if (!fenced) {
-          throw new ClaimLostError();
-        }
-
-        return { duplicate: true };
-      }
-
-      const updatedConversation = await tx.conversation.update({
-        where: { id: conversation.id },
-        data: {
-          lastMessage: message.text,
-          lastMessageAt: now,
-          unreadCount: { increment: 1 },
-        },
-      });
-
-      const fenced = await fencedTransition(
-        tx,
+    const result = await prisma.$transaction(async (tx) =>
+      persistInboundMessage(tx, {
         sellerId,
         updateId,
+        updateType: update.updateType,
         claimToken,
-        "PROCESSED"
-      );
-
-      if (!fenced) {
-        throw new ClaimLostError();
-      }
-
-      return {
-        duplicate: false,
-        newMessage,
-        updatedConversation,
-      };
-    });
+        message,
+        externalThreadId,
+        now,
+      })
+    );
 
     if (result.duplicate) {
       // Message content already persisted; no unread increment, no events.
@@ -790,43 +983,13 @@ export const telegramWebhook = async (
 
     return res.sendStatus(200);
   } catch (err) {
-    if (err instanceof ClaimLostError) {
-      /*
-       * Another worker owns the claim now; our transaction rolled
-       * back, so nothing was persisted. Acknowledge and let the
-       * current owner finish.
-       */
-      return res.sendStatus(200);
-    }
-
-    if (isUniqueConstraintViolation(err)) {
-      logger.warn(
-        "Telegram webhook: duplicate message acknowledged",
-        { sellerId, updateId }
-      );
-
-      return res.sendStatus(200);
-    }
-
-    logger.error(
-      "Telegram incoming webhook processing failed:",
+    const policy = await handleProcessingFailure(
+      sellerId,
+      updateId,
+      claimToken,
       err
     );
 
-    /*
-     * Transient failure: mark FAILED only if we still own the claim
-     * (fenced), so we never clobber a reclaimer's PROCESSING state.
-     * Telegram retries the delivery; the FAILED row is reclaimable.
-     */
-    if (claimToken) {
-      await fencedTransitionBestEffort(
-        sellerId,
-        updateId,
-        claimToken,
-        "FAILED"
-      );
-    }
-
-    return res.sendStatus(500);
+    return res.sendStatus(policy === "acknowledge" ? 200 : 500);
   }
 };
