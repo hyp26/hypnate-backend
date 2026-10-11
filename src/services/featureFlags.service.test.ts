@@ -91,8 +91,8 @@ describe("normalizeFeatureFlags", () => {
 
     assert.equal(flags.maintenanceMode, true);
     assert.equal(
-      (flags as Record<string, unknown>).superuserBypass,
-      undefined
+      Object.prototype.hasOwnProperty.call(flags, "superuserBypass"),
+      false
     );
   });
 });
