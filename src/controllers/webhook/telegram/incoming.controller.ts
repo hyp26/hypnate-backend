@@ -42,6 +42,10 @@ import { logger } from "../../../utils/logger";
  * - ClaimLostError is acknowledged 200 ONLY when the ledger row is
  *   durably PROCESSED; otherwise 503, never touching the new owner's
  *   state.
+ * - Terminal paths (bot / unsupported / defensive fallbacks) use the
+ *   shared acknowledgeTerminal() policy: marked → 200; lost → 200 only
+ *   on a durable PROCESSED confirmation, else 503; db_error → 500;
+ *   a failed confirmation read → 503.
  *
  * Non-text Telegram messages: only a textual placeholder like
  * "[Telegram photo message]" is persisted (mirroring the WhatsApp
@@ -567,9 +571,7 @@ export async function fencedTransition(
  * Never silently swallows a database error:
  * - "marked"  → the state is durably saved; acknowledge.
  * - "lost"    → another worker owns the claim; do not touch its state.
- * - "db_error"→ the terminal state may not be saved; respond 500 so
- *   Telegram retries. Re-running these paths is idempotent (they have
- *   no side effects beyond the ledger row), so a retry is always safe.
+ * - "db_error"→ the terminal state may not be saved; respond retryably.
  */
 async function markTerminal(
   sellerId: number,
@@ -594,6 +596,56 @@ async function markTerminal(
     );
 
     return "db_error";
+  }
+}
+
+/*
+ * Shared acknowledgment policy for the terminal paths (bot messages,
+ * unsupported updates, defensive fallbacks) — deliberately consistent
+ * with the ClaimLostError confirmation logic in handleProcessingFailure:
+ * - "marked"   → our fenced PROCESSED transition succeeded → 200.
+ * - "lost"     → another worker owns the claim; we do NOT mark the
+ *   update complete merely because someone else owns it. Acknowledge
+ *   200 only if the durable ledger row is confirmed PROCESSED;
+ *   otherwise 503.
+ * - "db_error" → the terminal state may not be saved → 500.
+ * - A failed confirmation read → 503 (retryable), never 200.
+ * Never overwrites another worker's claim.
+ * The optional ledgerReader seam (defaulting to the shared Prisma
+ * client) lets tests exercise the confirmation-read failure path.
+ * Exported for database tests.
+ */
+export async function acknowledgeTerminal(
+  sellerId: number,
+  updateId: number,
+  terminal: TerminalTransitionResult,
+  ledgerReader: { telegramWebhookUpdate: { findUnique: (args: any) => Promise<any> } } = prisma
+): Promise<number> {
+  if (terminal === "marked") {
+    return 200;
+  }
+
+  if (terminal === "db_error") {
+    return 500;
+  }
+
+  // terminal === "lost": confirm the durable ledger state.
+  try {
+    const row = await ledgerReader.telegramWebhookUpdate.findUnique({
+      where: {
+        sellerId_updateId: { sellerId, updateId },
+      },
+      select: { status: true },
+    });
+
+    return row?.status === "PROCESSED" ? 200 : 503;
+  } catch (err) {
+    logger.error(
+      "Telegram webhook: lost-claim confirmation read failed; responding retryably",
+      { sellerId, updateId, err }
+    );
+
+    return 503;
   }
 }
 
@@ -904,9 +956,9 @@ export const telegramWebhook = async (
     if (isBotMessage(update)) {
       /*
        * Bot messages are ignored, but the acknowledgment is
-       * observable: only report 200 when the PROCESSED state was
-       * actually saved (or the claim was taken over by the new
-       * owner, who will finish it).
+       * observable through the shared terminal policy: 200 only when
+       * PROCESSED was durably saved by us, or confirmed on the ledger
+       * after a lost claim; retryable otherwise.
        */
       const marked = await markTerminal(
         sellerId,
@@ -915,11 +967,9 @@ export const telegramWebhook = async (
         "PROCESSED"
       );
 
-      if (marked === "db_error") {
-        return res.sendStatus(500);
-      }
-
-      return res.sendStatus(200);
+      return res.sendStatus(
+        await acknowledgeTerminal(sellerId, updateId, marked)
+      );
     }
 
     if (update.kind === "unsupported") {
@@ -930,16 +980,20 @@ export const telegramWebhook = async (
         "PROCESSED"
       );
 
-      if (marked === "db_error") {
-        return res.sendStatus(500);
-      }
-
-      logger.info(
-        "Telegram webhook: acknowledged unsupported update",
-        { sellerId, updateType: update.updateType, updateId }
+      const status = await acknowledgeTerminal(
+        sellerId,
+        updateId,
+        marked
       );
 
-      return res.sendStatus(200);
+      if (status === 200) {
+        logger.info(
+          "Telegram webhook: acknowledged unsupported update",
+          { sellerId, updateType: update.updateType, updateId }
+        );
+      }
+
+      return res.sendStatus(status);
     }
 
     const message = update.message;
@@ -952,11 +1006,9 @@ export const telegramWebhook = async (
         "PROCESSED"
       );
 
-      if (marked === "db_error") {
-        return res.sendStatus(500);
-      }
-
-      return res.sendStatus(200);
+      return res.sendStatus(
+        await acknowledgeTerminal(sellerId, updateId, marked)
+      );
     }
 
     /*

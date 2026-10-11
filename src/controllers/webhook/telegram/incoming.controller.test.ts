@@ -12,14 +12,15 @@ import {
   simulateReclaimRace,
   countEffectsAfterProcessed,
   statusForPolicy,
+  acknowledgeTerminal,
   TELEGRAM_CLAIM_STALE_MS,
 } from "./incoming.controller";
 
 /*
  * CommonJS-compatible source lookup: works both when the suite runs
- * from src (ts-node) and from the compiled dist output, and skips the
- * source-scan assertions (without passing them) when neither file is
- * reachable.
+ * from src (ts-node) and from the compiled dist output. When neither
+ * file is reachable the source-scan tests are explicitly SKIPPED via
+ * node:test's t.skip() — they are never reported as passed.
  */
 function findControllerSource(): string | null {
   const candidates = [
@@ -427,15 +428,100 @@ test("an unconfirmed in-flight claim maps to a retryable HTTP 503, never 200", (
   assert.equal(statusForPolicy("retry_in_flight"), 503);
 });
 
+// ── Terminal acknowledgment policy (supplementary; DB suite has the
+// real-database versions of the "lost" cases) ─────────────────────────────────
+
+function readerReturning(row: unknown) {
+  return {
+    telegramWebhookUpdate: {
+      findUnique: async () => row,
+    },
+  };
+}
+
+function failingReader() {
+  return {
+    telegramWebhookUpdate: {
+      findUnique: async () => {
+        throw new Error("connection reset during confirmation read");
+      },
+    },
+  };
+}
+
+test("a marked terminal transition is acknowledged with 200", async () => {
+  assert.equal(await acknowledgeTerminal(1, 100, "marked"), 200);
+});
+
+test("a db_error terminal transition maps to HTTP 500", async () => {
+  assert.equal(await acknowledgeTerminal(1, 101, "db_error"), 500);
+});
+
+test("a lost claim confirmed PROCESSED on the ledger is acknowledged with 200", async () => {
+  const status = await acknowledgeTerminal(
+    1,
+    102,
+    "lost",
+    readerReturning({ status: "PROCESSED" })
+  );
+
+  assert.equal(status, 200);
+});
+
+test("a lost claim whose ledger row is PROCESSING returns retryable 503", async () => {
+  const status = await acknowledgeTerminal(
+    1,
+    103,
+    "lost",
+    readerReturning({ status: "PROCESSING" })
+  );
+
+  assert.equal(status, 503);
+});
+
+test("a lost claim whose ledger row is FAILED returns retryable 503", async () => {
+  const status = await acknowledgeTerminal(
+    1,
+    104,
+    "lost",
+    readerReturning({ status: "FAILED" })
+  );
+
+  assert.equal(status, 503);
+});
+
+test("a lost claim with no ledger row returns retryable 503", async () => {
+  const status = await acknowledgeTerminal(
+    1,
+    105,
+    "lost",
+    readerReturning(null)
+  );
+
+  assert.equal(status, 503);
+});
+
+test("a failed confirmation read after a lost claim returns retryable 503, never 200", async () => {
+  const status = await acknowledgeTerminal(
+    1,
+    106,
+    "lost",
+    failingReader()
+  );
+
+  assert.equal(status, 503);
+});
+
 // ── Placeholder-reply regression ───────────────────────────────────────────
 
-test("the placeholder auto-reply no longer exists in the controller source", () => {
+test("the placeholder auto-reply no longer exists in the controller source", async (t) => {
   const source = findControllerSource();
 
   if (source === null) {
     // Source file unreachable (e.g. running from dist without a src
-    // checkout): skip the scan rather than pass it silently.
-    return;
+    // checkout): skip the scan explicitly so it is reported as
+    // skipped, never as passed.
+    return t.skip("controller source not reachable from this run location");
   }
 
   assert.ok(
@@ -444,22 +530,22 @@ test("the placeholder auto-reply no longer exists in the controller source", () 
   );
 });
 
-test("the controller never imports the Telegram send service", () => {
+test("the controller never imports the Telegram send service", async (t) => {
   const source = findControllerSource();
 
   if (source === null) {
-    return;
+    return t.skip("controller source not reachable from this run location");
   }
 
   assert.ok(!source.includes("sendTelegramMessage"));
   assert.ok(!source.includes("telegram.service"));
 });
 
-test("non-text placeholders document that no media bytes are persisted", () => {
+test("non-text placeholders document that no media bytes are persisted", async (t) => {
   const source = findControllerSource();
 
   if (source === null) {
-    return;
+    return t.skip("controller source not reachable from this run location");
   }
 
   // The controller must document that media files are not downloaded or
@@ -467,4 +553,21 @@ test("non-text placeholders document that no media bytes are persisted", () => {
   assert.ok(source.includes("media files are NOT downloaded"));
   assert.ok(!source.includes("getFile"));
   assert.ok(!source.includes("file_id"));
+});
+
+test("all terminal paths use the shared acknowledgeTerminal policy", async (t) => {
+  const source = findControllerSource();
+
+  if (source === null) {
+    return t.skip("controller source not reachable from this run location");
+  }
+
+  // Bot-message, unsupported-update, and defensive fallback paths must
+  // all route through the shared acknowledgeTerminal policy — no
+  // branch may return a blind 200 for a lost or failed transition.
+  const routedCalls = source.split("await acknowledgeTerminal(").length - 1;
+  assert.ok(
+    routedCalls >= 3,
+    `bot / unsupported / fallback paths must all call acknowledgeTerminal (found ${routedCalls})`
+  );
 });

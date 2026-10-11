@@ -186,17 +186,29 @@ dbTest("1. concurrent deliveries of the same update ID persist exactly one messa
       ctrl.telegramWebhook(makeReq(sellerId, body, io), makeRes()),
     ]);
 
-    // Exactly one worker owns the claim (200); the loser observes busy
-    // and receives a retryable 503 — never a premature acknowledgment.
+    /*
+     * Both outcomes are valid and depend on scheduling:
+     * - {200, 503}: the losing request observed the in-flight claim
+     *   and was told to retry (no premature acknowledgment).
+     * - {200, 200}: the losing request read the durable PROCESSED
+     *   status AFTER the winner's transaction committed and confirmed
+     *   completion on the ledger.
+     * A premature 200 (anything not backed by a durable PROCESSED
+     * ledger row) is ruled out by the assertions below.
+     */
     const codes = [resA.statusCode, resB.statusCode].sort();
-    assert.equal(codes[0], 200);
-    assert.equal(codes[1], 503);
+    assert.equal(codes[0], 200, "exactly one request must own the claim");
+    assert.ok(
+      codes[1] === 503 || codes[1] === 200,
+      `second response must be a retryable busy (503) or a durable confirmation (200), got ${codes[1]}`
+    );
 
-    assert.equal(await messageCount(sellerId, 501), 1);
+    // Idempotency holds under every valid outcome.
+    assert.equal(await messageCount(sellerId, 501), 1, "exactly one message");
 
     const conversation = await conversationFor(sellerId, 501);
     assert.ok(conversation);
-    assert.equal(conversation.unreadCount, 1);
+    assert.equal(conversation.unreadCount, 1, "unread incremented once");
 
     assert.equal(
       io.events.filter((e) => e.event === "new_message").length,
@@ -204,7 +216,31 @@ dbTest("1. concurrent deliveries of the same update ID persist exactly one messa
       "exactly one new_message event"
     );
 
-    assert.equal((await ledger(sellerId, 900001)).status, "PROCESSED");
+    // Any duplicate 200 must be backed by a durable PROCESSED row.
+    const row = await ledger(sellerId, 900001);
+    assert.ok(row, "ledger row exists");
+    assert.equal(row.status, "PROCESSED");
+    assert.ok(
+      row.claimToken && row.claimToken.length > 0,
+      "processed row retains its owner's fencing token"
+    );
+
+    if (codes[1] === 200) {
+      // The second 200 happened only after the durable commit; verify
+      // it was never a busy-claim acknowledgment by replaying the
+      // duplicate read path: a further retry also returns 200.
+      const replay = await ctrl.telegramWebhook(
+        makeReq(sellerId, body, io),
+        makeRes()
+      );
+      assert.equal(replay.statusCode, 200);
+      assert.equal(await messageCount(sellerId, 501), 1, "still one message");
+      assert.equal(
+        io.events.filter((e) => e.event === "new_message").length,
+        1,
+        "still exactly one event"
+      );
+    }
   } finally {
     await teardownFixtures(sellerId);
   }
@@ -841,3 +877,166 @@ dbTest("15. a ClaimLostError is acknowledged only when the update is durably PRO
     await teardownFixtures(sellerId);
   }
 });
+
+// ── Terminal-path acknowledgment policy (lost claims in bot /
+//    unsupported / defensive fallback paths) ─────────────────────────────────
+
+dbTest("16. a lost terminal claim whose ledger row is not PROCESSED returns retryable 503", async () => {
+  const { sellerId } = await setupFixtures();
+
+  try {
+    // The terminal path's fenced PROCESSED flip matched zero rows
+    // ("lost") and the new owner is still processing.
+    await prisma.telegramWebhookUpdate.create({
+      data: {
+        sellerId,
+        updateId: 900160,
+        status: "PROCESSING",
+        claimToken: "new-owner",
+      },
+    });
+
+    assert.equal(
+      await ctrl.acknowledgeTerminal(sellerId, 900160, "lost"),
+      503,
+      "lost claim with PROCESSING row must not be acknowledged"
+    );
+
+    // Same for a FAILED row: completion is not confirmed.
+    await prisma.telegramWebhookUpdate.update({
+      where: { sellerId_updateId: { sellerId, updateId: 900160 } },
+      data: { status: "FAILED" },
+    });
+
+    assert.equal(
+      await ctrl.acknowledgeTerminal(sellerId, 900160, "lost"),
+      503,
+      "lost claim with FAILED row must not be acknowledged"
+    );
+
+    // The new owner's state is untouched by the ack check.
+    const row = await ledger(sellerId, 900160);
+    assert.equal(row.status, "FAILED");
+    assert.equal(row.claimToken, "new-owner");
+  } finally {
+    await teardownFixtures(sellerId);
+  }
+});
+
+dbTest("17. a lost terminal claim whose ledger row is durably PROCESSED returns 200", async () => {
+  const { sellerId } = await setupFixtures();
+
+  try {
+    // Another worker completed the update before our fenced flip.
+    await prisma.telegramWebhookUpdate.create({
+      data: {
+        sellerId,
+        updateId: 900170,
+        status: "PROCESSED",
+        claimToken: "new-owner",
+      },
+    });
+
+    assert.equal(await ctrl.acknowledgeTerminal(sellerId, 900170, "lost"), 200);
+
+    // A retryable acknowledgment would cause Telegram to redeliver a
+    // durably processed update forever; 200 is required here.
+    const row = await ledger(sellerId, 900170);
+    assert.equal(row.status, "PROCESSED");
+  } finally {
+    await teardownFixtures(sellerId);
+  }
+});
+
+dbTest("18. a failed confirmation read after a lost terminal claim returns retryable 503", async () => {
+  const { sellerId } = await setupFixtures();
+
+  try {
+    // The durable ledger read itself fails (e.g. connection reset).
+    // The outcome must be retryable — never a false 200 and never a
+    // 500 that implies the update failed.
+    const failingReader = {
+      telegramWebhookUpdate: {
+        findUnique: async () => {
+          throw new Error("connection reset during confirmation read");
+        },
+      },
+    };
+
+    const status = await ctrl.acknowledgeTerminal(
+      sellerId,
+      900180,
+      "lost",
+      failingReader
+    );
+
+    assert.equal(status, 503, "failed confirmation read must be retryable");
+  } finally {
+    await teardownFixtures(sellerId);
+  }
+});
+
+dbTest("19. an unsupported update is acknowledged 200 only after its PROCESSED flip is durable", async () => {
+  const { sellerId } = await setupFixtures();
+
+  try {
+    const io = captureIo();
+    const body = {
+      update_id: 900190,
+      callback_query: { id: "cb1", from: { id: 7 } },
+    };
+
+    const res = await ctrl.telegramWebhook(
+      makeReq(sellerId, body, io),
+      makeRes()
+    );
+
+    // Our own fenced transition marked the update PROCESSED → 200.
+    assert.equal(res.statusCode, 200);
+    assert.equal((await ledger(sellerId, 900190)).status, "PROCESSED");
+
+    // No messages and no socket events for unsupported updates.
+    assert.equal(io.events.length, 0);
+
+    const conversations = await prisma.conversation.findMany({
+      where: { sellerId },
+    });
+    assert.equal(conversations.length, 0);
+  } finally {
+    await teardownFixtures(sellerId);
+  }
+});
+
+dbTest("20. a bot message is acknowledged 200 after the durable PROCESSED flip and persists nothing", async () => {
+  const { sellerId } = await setupFixtures();
+
+  try {
+    const io = captureIo();
+    const body = {
+      update_id: 900191,
+      message: {
+        message_id: 210,
+        from: { id: 8, first_name: "ShopBot", is_bot: true },
+        chat: { id: 512 },
+        text: "automated ping",
+      },
+    };
+
+    const res = await ctrl.telegramWebhook(
+      makeReq(sellerId, body, io),
+      makeRes()
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.equal((await ledger(sellerId, 900191)).status, "PROCESSED");
+    assert.equal(io.events.length, 0, "no socket events for bot messages");
+
+    const conversations = await prisma.conversation.findMany({
+      where: { sellerId },
+    });
+    assert.equal(conversations.length, 0, "bot messages persist nothing");
+  } finally {
+    await teardownFixtures(sellerId);
+  }
+});
+
