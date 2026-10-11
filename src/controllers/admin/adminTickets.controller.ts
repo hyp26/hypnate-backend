@@ -111,6 +111,92 @@ const generateTicketNumber = async (): Promise<string> => {
 };
 
 /* ----------------------------------------------------
+   AUTHORIZATION-SCOPED QUERY BUILDERS
+---------------------------------------------------- */
+
+export interface TicketViewer {
+  role: string;
+  id: number;
+}
+
+/**
+ * Builds the Prisma `where` clause for the ticket list.
+ *
+ * SUPPORT staff are scoped at the database-query level to
+ * tickets assigned to them — the restriction is applied in
+ * the query itself, never by filtering results afterwards,
+ * and it overrides any assignedToAdminId filter a SUPPORT
+ * user may have supplied.
+ *
+ * ADMIN and SUPER_ADMIN retain the existing unscoped listing.
+ */
+export const buildTicketListWhere = (
+  query: {
+    status?: string;
+    priority?: string;
+    assignedToAdminId?: number;
+    search?: string;
+  },
+  viewer: TicketViewer
+): Record<string, unknown> => {
+  const where: Record<string, unknown> = {};
+
+  if (query.status) {
+    where.status = query.status;
+  }
+
+  if (query.priority) {
+    where.priority = query.priority;
+  }
+
+  if (query.assignedToAdminId) {
+    where.assignedToAdminId = query.assignedToAdminId;
+  }
+
+  if (viewer.role === "SUPPORT") {
+    where.assignedToAdminId = viewer.id;
+  }
+
+  if (query.search) {
+    where.OR = [
+      { ticketNumber: { contains: query.search, mode: "insensitive" } },
+      { subject: { contains: query.search, mode: "insensitive" } },
+      { description: { contains: query.search, mode: "insensitive" } },
+    ];
+  }
+
+  return where;
+};
+
+/**
+ * Builds the Prisma `where` clause for a single-ticket lookup.
+ *
+ * For SUPPORT, the assignment scope is part of the query, so
+ * an unassigned or other-admin ticket is simply not found
+ * (non-disclosing 404, consistent with the existing
+ * "Ticket not found" response).
+ *
+ * ADMIN and SUPER_ADMIN retain unscoped lookup.
+ */
+export const buildTicketLookupWhere = (
+  identifier: string,
+  viewer: TicketViewer
+): Record<string, unknown> => {
+  const where: Record<string, unknown> = {
+    OR: [
+      { ticketNumber: identifier },
+      { id: Number(identifier) || -1 },
+    ],
+  };
+
+  if (viewer.role === "SUPPORT") {
+    where.assignedToAdminId = viewer.id;
+  }
+
+  return where;
+};
+
+/* ----------------------------------------------------
    GET /api/admin/tickets
 ---------------------------------------------------- */
 
@@ -129,37 +215,17 @@ export const listTickets = async (
       return;
     }
 
-    const {
-      page,
-      limit,
-      search,
-      status,
-      priority,
-      assignedToAdminId,
-    } = parsed.data.query;
+    const { page, limit } = parsed.data.query;
     const skip = (page - 1) * limit;
 
-    const where: Record<string, unknown> = {};
-
-    if (status) {
-      where.status = status;
-    }
-
-    if (priority) {
-      where.priority = priority;
-    }
-
-    if (assignedToAdminId) {
-      where.assignedToAdminId = assignedToAdminId;
-    }
-
-    if (search) {
-      where.OR = [
-        { ticketNumber: { contains: search, mode: "insensitive" } },
-        { subject: { contains: search, mode: "insensitive" } },
-        { description: { contains: search, mode: "insensitive" } },
-      ];
-    }
+    /*
+     * SUPPORT staff only ever see tickets assigned to them;
+     * the scope is applied inside the database query.
+     */
+    const where = buildTicketListWhere(
+      parsed.data.query,
+      req.adminUser!
+    );
 
     const [tickets, total, statusCounts] = await Promise.all([
       prisma.supportTicket.findMany({
@@ -172,6 +238,7 @@ export const listTickets = async (
       prisma.supportTicket.count({ where }),
       prisma.supportTicket.groupBy({
         by: ["status"],
+        where,
         _count: { id: true },
       }),
     ]);
@@ -208,13 +275,13 @@ export const getTicket = async (
   try {
     const identifier = req.params.id;
 
+    /*
+     * SUPPORT staff can only retrieve tickets assigned to
+     * them; the assignment scope is part of the lookup query
+     * itself, so an unassigned ticket is not found at all.
+     */
     const ticket = await prisma.supportTicket.findFirst({
-      where: {
-        OR: [
-          { ticketNumber: identifier },
-          { id: Number(identifier) || -1 },
-        ],
-      },
+      where: buildTicketLookupWhere(identifier, req.adminUser!),
       include: TICKET_INCLUDE,
     });
 
