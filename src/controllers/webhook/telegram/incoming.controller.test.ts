@@ -8,6 +8,10 @@ import {
   classifyTelegramUpdate,
   decideClaimAction,
   resolveInboundText,
+  isReclaimEligible,
+  ownsClaim,
+  simulateReclaimRace,
+  countEffectsAfterProcessed,
   TELEGRAM_CLAIM_STALE_MS,
 } from "./incoming.controller";
 
@@ -180,7 +184,20 @@ test("text content is preserved and media maps to placeholders", () => {
   assert.equal(resolveInboundText({}), "");
 });
 
-// ── Claim decision ─────────────────────────────────────────────────────────
+test("non-text placeholders document that no media bytes are persisted", () => {
+  const source = readFileSync(
+    join(__dirname, "incoming.controller.ts"),
+    "utf8"
+  );
+
+  // The controller must document that media files are not downloaded or
+  // stored; only the textual placeholder is persisted.
+  assert.ok(source.includes("media files are NOT downloaded"));
+  assert.ok(!source.includes("getFile"));
+  assert.ok(!source.includes("file_id"));
+});
+
+// ── Claim decision (read path) ──────────────────────────────────────────────
 
 test("a claimed-elsewhere update with no existing row is processed new", () => {
   assert.equal(decideClaimAction(null), "process_new");
@@ -248,6 +265,216 @@ test("unknown statuses without staleness are treated as in flight", () => {
   });
 
   assert.equal(action, "in_flight");
+});
+
+// ── Reclaim eligibility (write-path WHERE clause) ───────────────────────────
+
+test("only FAILED or stale PROCESSING rows are reclaim eligible", () => {
+  const now = new Date("2026-10-11T12:00:00Z");
+
+  assert.equal(
+    isReclaimEligible("FAILED", now, now),
+    true,
+    "FAILED rows are always reclaimable"
+  );
+  assert.equal(
+    isReclaimEligible(
+      "PROCESSING",
+      new Date(now.getTime() - TELEGRAM_CLAIM_STALE_MS - 1),
+      now
+    ),
+    true,
+    "stale PROCESSING rows are reclaimable"
+  );
+  assert.equal(
+    isReclaimEligible("PROCESSING", now, now),
+    false,
+    "fresh PROCESSING rows are not reclaimable"
+  );
+  assert.equal(
+    isReclaimEligible("PROCESSED", now, now),
+    false,
+    "PROCESSED rows are never reclaimable"
+  );
+});
+
+// ── Competing claims during reclamation (atomic race) ────────────────────────
+
+test("exactly one worker wins the reclaim race; all others back off", () => {
+  const now = new Date("2026-10-11T12:00:00Z");
+  const failed = {
+    status: "FAILED",
+    updatedAt: new Date(now.getTime() - 60_000),
+    claimToken: "old-attempt",
+  };
+
+  const outcomes = simulateReclaimRace(failed, 5, now);
+
+  assert.equal(outcomes[0], "owned");
+  assert.equal(outcomes.filter((o) => o === "owned").length, 1);
+  assert.equal(outcomes.filter((o) => o === "busy").length, 4);
+});
+
+test("a stale PROCESSING row is also reclaimed by exactly one worker", () => {
+  const now = new Date("2026-10-11T12:00:00Z");
+  const staleRow = {
+    status: "PROCESSING",
+    updatedAt: new Date(now.getTime() - TELEGRAM_CLAIM_STALE_MS - 5000),
+    claimToken: "crashed-worker",
+  };
+
+  const outcomes = simulateReclaimRace(staleRow, 3, now);
+
+  assert.equal(outcomes.filter((o) => o === "owned").length, 1);
+  assert.equal(outcomes.filter((o) => o === "busy").length, 2);
+});
+
+test("a fresh PROCESSING row cannot be stolen by any racer", () => {
+  const now = new Date("2026-10-11T12:00:00Z");
+  const fresh = {
+    status: "PROCESSING",
+    updatedAt: now,
+    claimToken: "in-flight-worker",
+  };
+
+  const outcomes = simulateReclaimRace(fresh, 4, now);
+
+  assert.equal(outcomes.filter((o) => o === "owned").length, 0);
+  assert.equal(outcomes.filter((o) => o === "busy").length, 4);
+});
+
+// ── Simultaneous duplicate deliveries ───────────────────────────────────────
+
+test("simultaneous duplicates of an unclaimed update resolve to one owner", () => {
+  // First delivery creates the row (owned); simultaneous duplicates hit the
+  // unique index and observe a fresh PROCESSING row → busy, never reprocess.
+  const now = new Date("2026-10-11T12:00:00Z");
+
+  // Model a fresh row created by the first delivery.
+  const fresh = {
+    status: "PROCESSING",
+    updatedAt: now,
+    claimToken: "first-delivery",
+  };
+
+  const outcomes = simulateReclaimRace(fresh, 3, now);
+
+  assert.equal(outcomes.filter((o) => o === "owned").length, 0);
+  assert.ok(outcomes.every((o) => o === "busy"));
+});
+
+test("duplicate deliveries after success never persist anything", () => {
+  const effects = countEffectsAfterProcessed(7);
+
+  assert.equal(effects.deliveries, 7);
+  assert.equal(effects.messagesPersisted, 0);
+  assert.equal(effects.unreadIncrements, 0);
+});
+
+test("a PROCESSED claim is reported as a duplicate by the read path", () => {
+  const now = new Date("2026-10-11T12:00:00Z");
+
+  assert.equal(
+    decideClaimAction(
+      { status: "PROCESSED", updatedAt: now, claimToken: "done" },
+      now
+    ),
+    "duplicate"
+  );
+});
+
+// ── Claim ownership / fencing ───────────────────────────────────────────────
+
+test("a worker owns its claim only while PROCESSING under its token", () => {
+  const now = new Date();
+  const token = "worker-a";
+
+  assert.equal(
+    ownsClaim({ status: "PROCESSING", updatedAt: now, claimToken: token }, token),
+    true
+  );
+});
+
+test("a worker that lost its claim to a reclaimer no longer owns it", () => {
+  const now = new Date();
+  const row = {
+    status: "PROCESSING",
+    updatedAt: now,
+    claimToken: "reclaimer-b",
+  };
+
+  assert.equal(ownsClaim(row, "expired-worker-a"), false);
+});
+
+test("a PROCESSED row is owned by nobody, so no late writes are possible", () => {
+  const now = new Date();
+
+  assert.equal(
+    ownsClaim({ status: "PROCESSED", updatedAt: now, claimToken: "x" }, "x"),
+    false
+  );
+});
+
+test("a FAILED row is owned by nobody, so a crashed worker cannot self-heal it", () => {
+  const now = new Date();
+
+  assert.equal(
+    ownsClaim({ status: "FAILED", updatedAt: now, claimToken: "x" }, "x"),
+    false
+  );
+});
+
+test("a null record or null token owns nothing", () => {
+  assert.equal(ownsClaim(null, "x"), false);
+  assert.equal(
+    ownsClaim({ status: "PROCESSING", updatedAt: new Date() }, "x"),
+    false
+  );
+});
+
+// ── Transaction failure and retry ───────────────────────────────────────────
+
+test("a transaction failure leaves the claim FAILED and reclaimable by retry", () => {
+  const now = new Date("2026-10-11T12:00:00Z");
+
+  // A crashed transaction marks its claim FAILED (fenced)...
+  const failed = {
+    status: "FAILED",
+    updatedAt: now,
+    claimToken: "crashed-attempt",
+  };
+
+  // ...and Telegram's retry reclaims it exactly once.
+  const outcomes = simulateReclaimRace(failed, 2, now);
+
+  assert.equal(outcomes[0], "owned");
+  assert.equal(outcomes[1], "busy");
+  assert.equal(isReclaimEligible("FAILED", now, now), true);
+});
+
+test("repeated FAILED attempts recover on each retry without double-owning", () => {
+  const now = new Date("2026-10-11T12:00:00Z");
+
+  // First retry succeeds but fails mid-transaction again → FAILED again.
+  let row = {
+    status: "FAILED",
+    updatedAt: new Date(now.getTime() - 120_000),
+    claimToken: "attempt-1",
+  };
+
+  const first = simulateReclaimRace(row, 1, now);
+  assert.equal(first[0], "owned");
+
+  // It fails again → next retry cycle also yields exactly one owner.
+  row = {
+    status: "FAILED",
+    updatedAt: new Date(now.getTime() - 60_000),
+    claimToken: "attempt-2",
+  };
+
+  const second = simulateReclaimRace(row, 2, now);
+  assert.equal(second.filter((o) => o === "owned").length, 1);
+  assert.equal(second.filter((o) => o === "busy").length, 1);
 });
 
 // ── Placeholder-reply regression ───────────────────────────────────────────
