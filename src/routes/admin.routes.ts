@@ -217,28 +217,30 @@ router.delete(
    ANNOUNCEMENTS
 ---------------------------------------------------- */
 
-router.get("/announcements", ...guard, adminHandler(listAnnouncements));
-router.post("/announcements", ...guard, adminHandler(createAnnouncement));
-router.patch("/announcements/:id", ...guard, adminHandler(updateAnnouncement));
-router.delete("/announcements/:id", ...guard, adminHandler(deleteAnnouncement));
+const adminOnly = requireAdminRoles("SUPER_ADMIN", "ADMIN") as RequestHandler;
+
+router.get("/announcements", ...guard, adminOnly, adminHandler(listAnnouncements));
+router.post("/announcements", ...guard, adminOnly, adminHandler(createAnnouncement));
+router.patch("/announcements/:id", ...guard, adminOnly, adminHandler(updateAnnouncement));
+router.delete("/announcements/:id", ...guard, adminOnly, adminHandler(deleteAnnouncement));
 
 /* ----------------------------------------------------
    FAQ
 ---------------------------------------------------- */
 
-router.get("/faq", ...guard, adminHandler(listFaqs));
-router.post("/faq", ...guard, adminHandler(createFaq));
-router.patch("/faq/:id", ...guard, adminHandler(updateFaq));
-router.delete("/faq/:id", ...guard, adminHandler(deleteFaq));
+router.get("/faq", ...guard, adminOnly, adminHandler(listFaqs));
+router.post("/faq", ...guard, adminOnly, adminHandler(createFaq));
+router.patch("/faq/:id", ...guard, adminOnly, adminHandler(updateFaq));
+router.delete("/faq/:id", ...guard, adminOnly, adminHandler(deleteFaq));
 
 /* ----------------------------------------------------
    CONTENT PAGES
 ---------------------------------------------------- */
 
-router.get("/content", ...guard, adminHandler(listContentPages));
-router.post("/content", ...guard, adminHandler(createContentPage));
-router.patch("/content/:id", ...guard, adminHandler(updateContentPage));
-router.delete("/content/:id", ...guard, adminHandler(deleteContentPage));
+router.get("/content", ...guard, adminOnly, adminHandler(listContentPages));
+router.post("/content", ...guard, adminOnly, adminHandler(createContentPage));
+router.patch("/content/:id", ...guard, adminOnly, adminHandler(updateContentPage));
+router.delete("/content/:id", ...guard, adminOnly, adminHandler(deleteContentPage));
 
 /* ----------------------------------------------------
    AUDIT LOGS
@@ -255,17 +257,17 @@ router.get(
    SETTINGS + FEATURE FLAGS
 ---------------------------------------------------- */
 
-router.get("/settings", ...guard, adminHandler(getSettings));
-router.put("/settings", ...guard, adminHandler(updateSettings));
-router.get("/feature-flags", ...guard, adminHandler(getFeatureFlags));
-router.put("/feature-flags", ...guard, adminHandler(updateFeatureFlags));
+router.get("/settings", ...guard, adminOnly, adminHandler(getSettings));
+router.put("/settings", ...guard, adminOnly, adminHandler(updateSettings));
+router.get("/feature-flags", ...guard, adminOnly, adminHandler(getFeatureFlags));
+router.put("/feature-flags", ...guard, adminOnly, adminHandler(updateFeatureFlags));
 
 /* ----------------------------------------------------
    STATS + ANALYTICS
 ---------------------------------------------------- */
 
-router.get("/stats", ...guard, adminHandler(getAdminStats));
-router.get("/stats/charts", ...guard, adminHandler(getRevenueChart));
-router.get("/analytics", ...guard, adminHandler(getAdminAnalytics));
+router.get("/stats", ...guard, adminOnly, adminHandler(getAdminStats));
+router.get("/stats/charts", ...guard, adminOnly, adminHandler(getRevenueChart));
+router.get("/analytics", ...guard, adminOnly, adminHandler(getAdminAnalytics));
 
 export default router;

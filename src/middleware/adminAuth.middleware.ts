@@ -264,9 +264,16 @@ export const requireAdminPermission = (permission: AdminPermission) => {
  * Restricts a route to specific admin roles (used for
  * platform-wide operations that have no fine-grained
  * permission, e.g. seller suspension).
+ *
+ * The returned middleware is named so route-level tests can
+ * verify that a route actually enforces it.
  */
 export const requireAdminRoles = (...roles: AdminRoleValue[]) => {
-  return (req: AdminAuthRequest, res: Response, next: NextFunction): void => {
+  const requireAdminRolesMiddleware = (
+    req: AdminAuthRequest,
+    res: Response,
+    next: NextFunction
+  ): void => {
     const admin = req.adminUser;
 
     if (!admin) {
@@ -283,4 +290,6 @@ export const requireAdminRoles = (...roles: AdminRoleValue[]) => {
 
     next();
   };
+
+  return requireAdminRolesMiddleware;
 };
