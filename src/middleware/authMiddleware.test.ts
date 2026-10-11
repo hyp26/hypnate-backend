@@ -22,6 +22,7 @@ interface Outcome {
   allowed: boolean;
   error?: Error;
   reqUser?: AuthRequest["user"];
+  loadCalls: number;
 }
 
 /**
@@ -145,7 +146,7 @@ describe("verifyToken seller-suspension enforcement", () => {
     const r = await runVerify(adminToken, { status: "SUSPENDED" });
     // Admin access must not be blocked by a seller-status check.
     assert.equal(r.allowed, true);
-    assert.equal((r as any).loadCalls, 0);
+    assert.equal(r.loadCalls, 0);
     assert.equal(r.reqUser?.sellerId, null);
   });
 
