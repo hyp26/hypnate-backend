@@ -4,7 +4,7 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { Resend } from "resend";
 import prisma from "../prisma/client";
-import { AuthRequest } from "../middleware/authMiddleware";
+import { AuthRequest, isSellerBlocked } from "../middleware/authMiddleware";
 import { JWT_SECRET, jwtOptions, SALT_ROUNDS } from "../utils/jwtConfig";
 import { validatePassword } from "../utils/password";
 import { logger } from "../utils/logger";
@@ -459,6 +459,21 @@ export const verifyEmail = async (
     });
 
     /*
+     * P1-003: even a valid verification link must not create an
+     * authenticated session for a suspended or deactivated seller.
+     */
+    if (
+      user.sellerId !== null &&
+      isSellerBlocked(user.seller?.status)
+    ) {
+      return res.status(403).json({
+        message:
+          "This account is suspended. Please contact support.",
+        code: "ACCOUNT_SUSPENDED",
+      });
+    }
+
+    /*
      * The verification link can be opened on a different
      * browser/device than registration.
      *
@@ -648,6 +663,21 @@ export const login = async (
       });
     }
 
+    /*
+     * P1-003: a suspended or deactivated seller must not be able
+     * to log back in and obtain fresh tokens.
+     */
+    if (
+      user.sellerId !== null &&
+      isSellerBlocked(user.seller?.status)
+    ) {
+      return res.status(403).json({
+        message:
+          "This account is suspended. Please contact support.",
+        code: "ACCOUNT_SUSPENDED",
+      });
+    }
+
     const accessToken = createAccessToken(user);
     const refreshToken = createRefreshToken(
       user.id
@@ -819,6 +849,9 @@ export const refreshToken = async (
         role: true,
         sellerId: true,
         emailVerified: true,
+        seller: {
+          select: { status: true },
+        },
       },
     });
 
@@ -847,6 +880,26 @@ export const refreshToken = async (
         message:
           "Please verify your email before accessing Hypnate.",
         code: "EMAIL_NOT_VERIFIED",
+      });
+    }
+
+    /*
+     * P1-003: a suspended or deactivated seller must not obtain a
+     * new access token through an existing refresh session. The
+     * session is revoked so the same token cannot be retried.
+     */
+    if (
+      user.sellerId !== null &&
+      isSellerBlocked(user.seller?.status)
+    ) {
+      await revokeRefreshSession(token);
+
+      clearAuthCookies(res);
+
+      return res.status(403).json({
+        message:
+          "This account is suspended. Please contact support.",
+        code: "ACCOUNT_SUSPENDED",
       });
     }
 

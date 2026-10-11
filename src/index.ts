@@ -43,6 +43,7 @@ import whatsappWebhookRoutes from "./routes/webhook/whatsapp";
 
 // Middleware
 import { errorHandler } from "./middleware/errorHandler";
+import { isSellerBlocked } from "./middleware/authMiddleware";
 
 //utils
 import { logger } from "./utils/logger";
@@ -451,6 +452,22 @@ io.use(async (socket, next) => {
 
     if (!user || !user
 .sellerId) {
+      return next(
+        new Error("Unauthorized")
+      );
+    }
+
+    /*
+     * P1-003: enforce the seller's current platform status on the
+     * socket handshake too, so a suspended seller cannot hold a
+     * realtime connection with a previously issued token.
+     */
+    const seller = await prisma.seller.findUnique({
+      where: { id: user.sellerId },
+      select: { status: true },
+    });
+
+    if (isSellerBlocked(seller?.status)) {
       return next(
         new Error("Unauthorized")
       );
