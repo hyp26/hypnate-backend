@@ -12,6 +12,7 @@ import {
 } from "../controllers/auth.controller";
 import { resetPassword } from "../controllers/passwordReset.controller";
 import { verifyToken } from "../middleware/authMiddleware";
+import { requireRegistrationEnabled } from "../middleware/featureFlag.middleware";
 
 
 const router = Router();
@@ -19,7 +20,21 @@ const router = Router();
 /* ---------------------------
    PUBLIC
 ---------------------------- */
-router.post("/register", register as RequestHandler);
+
+/*
+ * P1-004: the registration gate runs BEFORE the register controller,
+ * so when the newUserRegistration feature flag is disabled the request
+ * is rejected with 403 REGISTRATION_DISABLED before any
+ * account-creation side effect (Seller/User creation, verification
+ * email, refresh session) can happen. The stored backend flag value
+ * is authoritative; the request body is never consulted for it.
+ */
+router.post(
+  "/register",
+  requireRegistrationEnabled as RequestHandler,
+  register as RequestHandler
+);
+
 router.post("/login", login as RequestHandler);
 router.post("/forgot-password", forgotPassword as RequestHandler);
 router.post("/reset-password/:token", resetPassword as RequestHandler );
