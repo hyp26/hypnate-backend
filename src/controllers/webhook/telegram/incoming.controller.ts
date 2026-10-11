@@ -440,15 +440,25 @@ export const CONVERSATION_CREATE_RETRY_ATTEMPTS = 3;
  * its transaction with P2002.
  *
  * Classification uses the P2002 meta.target diagnostic — it must
- * identify THAT index. Depending on the Prisma client version,
+ * identify THAT index EXACTLY. Depending on the Prisma client version,
  * meta.target is either the constraint name (e.g.
  * "Conversation_sellerId_platform_externalUserId_externalThreadId_key")
- * or an array of the violating field names. Any other target (Message,
- * TelegramWebhookUpdate, ...), any non-P2002 error, or a P2002 without
- * a usable target does NOT qualify and remains an unexpected error
- * handled retryably by handleProcessingFailure — never acknowledged.
- * Exported for tests.
+ * or an array of the violating field names. The array form must
+ * contain EXACTLY the four compound-key fields (order-insensitive);
+ * the string form must be exactly the Conversation compound constraint
+ * identity. Any other target (Message, TelegramWebhookUpdate, ...),
+ * any partial or superset target, any non-P2002 error, or a P2002
+ * without a usable target does NOT qualify and remains an unexpected
+ * error handled retryably by handleProcessingFailure — never
+ * acknowledged. Exported for tests.
  */
+export const CONVERSATION_COMPOUND_FIELDS: ReadonlyArray<string> = [
+  "sellerId",
+  "platform",
+  "externalUserId",
+  "externalThreadId",
+];
+
 export function isConversationCreateRace(
   err: unknown
 ): boolean {
@@ -461,20 +471,31 @@ export function isConversationCreateRace(
   ).meta?.target;
 
   if (Array.isArray(target)) {
-    const fields = target.map((f) => String(f));
+    if (target.length !== 4) {
+      // Partial or superset field arrays are NOT this race.
+      return false;
+    }
 
-    return (
-      fields.includes("externalUserId") &&
-      fields.includes("externalThreadId")
+    const present = new Set(target.map((f) => String(f)));
+
+    return CONVERSATION_COMPOUND_FIELDS.every(
+      (field) => present.has(field)
     );
   }
 
-  const name = typeof target === "string" ? target : "";
+  if (typeof target !== "string") {
+    return false;
+  }
+
+  const tokens = target.split("_");
 
   return (
-    name.startsWith("Conversation_") &&
-    name.includes("externalUserId") &&
-    name.includes("externalThreadId")
+    tokens.length === 6 &&
+    tokens[0] === "Conversation" &&
+    tokens[5] === "key" &&
+    CONVERSATION_COMPOUND_FIELDS.every((field) =>
+      tokens.includes(field)
+    )
   );
 }
 
@@ -1193,10 +1214,22 @@ export const telegramWebhook = async (
 
         lastRaceError = err;
 
-        logger.warn(
-          "Telegram webhook: conversation create race with a concurrent first message; retrying in a fresh transaction",
-          { sellerId, updateId, attempt: attempt + 1 }
-        );
+        if (attempt < CONVERSATION_CREATE_RETRY_ATTEMPTS) {
+          logger.warn(
+            "Telegram webhook: conversation create race with a concurrent first message; retrying in a fresh transaction",
+            { sellerId, updateId, attempt: attempt + 1 }
+          );
+        } else {
+          logger.error(
+            "Telegram webhook: conversation create race persisted beyond the retry budget; giving up on fresh-transaction retries",
+            {
+              sellerId,
+              updateId,
+              attempts: CONVERSATION_CREATE_RETRY_ATTEMPTS + 1,
+              err,
+            }
+          );
+        }
       }
     }
 

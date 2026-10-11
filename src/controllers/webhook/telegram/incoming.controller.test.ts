@@ -537,6 +537,17 @@ test("a P2002 on the Conversation compound index (field-array target) is the ret
   assert.equal(isConversationCreateRace(err), true);
 });
 
+test("a field-array target in a different order is still the create race", () => {
+  const err = p2002([
+    "externalThreadId",
+    "externalUserId",
+    "platform",
+    "sellerId",
+  ]);
+
+  assert.equal(isConversationCreateRace(err), true);
+});
+
 test("a P2002 naming the Conversation compound constraint (string target) is the retryable create race", () => {
   const err = p2002(
     "Conversation_sellerId_platform_externalUserId_externalThreadId_key"
@@ -555,6 +566,59 @@ test("a P2002 on any other index is NOT classified as the conversation race", ()
   assert.equal(isConversationCreateRace(messageDup), false);
   assert.equal(isConversationCreateRace(ledgerDup), false);
   assert.equal(isConversationCreateRace(messageConstraint), false);
+});
+
+test("a partial field-array target (externalUserId + externalThreadId only) is NOT the race", () => {
+  assert.equal(
+    isConversationCreateRace(p2002(["externalUserId", "externalThreadId"])),
+    false
+  );
+});
+
+test("a field-array target missing sellerId or platform is NOT the race", () => {
+  assert.equal(
+    isConversationCreateRace(
+      p2002(["platform", "externalUserId", "externalThreadId"])
+    ),
+    false
+  );
+  assert.equal(
+    isConversationCreateRace(
+      p2002(["sellerId", "externalUserId", "externalThreadId"])
+    ),
+    false
+  );
+});
+
+test("a field-array target with unrelated extra fields is NOT the race", () => {
+  assert.equal(
+    isConversationCreateRace(
+      p2002([
+        "sellerId",
+        "platform",
+        "externalUserId",
+        "externalThreadId",
+        "conversationId",
+      ])
+    ),
+    false
+  );
+});
+
+test("a partial or unrelated string target is NOT the race", () => {
+  assert.equal(
+    isConversationCreateRace(
+      p2002("Conversation_externalUserId_externalThreadId_key")
+    ),
+    false
+  );
+  assert.equal(
+    isConversationCreateRace(
+      p2002("Message_sellerId_platform_externalUserId_externalThreadId_key")
+    ),
+    false
+  );
+  assert.equal(isConversationCreateRace(p2002("Conversation_sellerId_key")), false);
 });
 
 test("a P2002 without a usable target is NOT classified as the conversation race", () => {
