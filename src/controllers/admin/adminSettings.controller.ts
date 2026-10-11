@@ -7,13 +7,16 @@ import {
   featureFlagsSchema,
 } from "../../schemas/admin.schemas";
 import { recordAudit } from "../../services/adminAudit.service";
+import {
+  DEFAULT_FEATURE_FLAGS,
+  FEATURE_FLAGS_KEY,
+} from "../../services/featureFlags.service";
 
 /* ----------------------------------------------------
    SETTINGS STORAGE
 ---------------------------------------------------- */
 
 const SETTINGS_KEY = "general";
-const FEATURE_FLAGS_KEY = "featureFlags";
 
 const DEFAULT_SETTINGS = {
   siteName: "Hypnate Admin",
@@ -25,13 +28,13 @@ const DEFAULT_SETTINGS = {
   supportEmail: "support@hypnate.in",
 };
 
-const DEFAULT_FEATURE_FLAGS = {
-  maintenanceMode: false,
-  newUserRegistration: true,
-  emailNotifications: true,
-  analyticsDashboard: true,
-  subscriptionUpgrades: true,
-};
+/*
+ * P1-004: the feature-flag storage key and default values now live in
+ * the shared feature-flag service (featureFlags.service.ts) so the
+ * admin API and the runtime enforcement paths (registration gate and
+ * maintenance middleware) cannot drift apart. The endpoints, the
+ * stored record, and the audit logging below are unchanged.
+ */
 
 const getSetting = async (
   key: string,

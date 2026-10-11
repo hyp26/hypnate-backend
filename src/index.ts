@@ -44,6 +44,7 @@ import whatsappWebhookRoutes from "./routes/webhook/whatsapp";
 // Middleware
 import { errorHandler } from "./middleware/errorHandler";
 import { isSellerBlocked } from "./middleware/authMiddleware";
+import { maintenanceModeMiddleware } from "./middleware/featureFlag.middleware";
 
 //utils
 import { logger } from "./utils/logger";
@@ -165,6 +166,31 @@ app.use(
   "/api/admin/auth/login",
   authLimiter
 );
+
+/* ---------------- MAINTENANCE MODE ---------------- */
+
+/*
+ * P1-004: when the maintenanceMode feature flag is enabled, block all
+ * user-facing API routes with a machine-readable 503 response, even
+ * for callers that bypass the frontend. Mounted ONCE here, before
+ * every route registration, so it executes before the affected routes.
+ *
+ * Operational exemptions (see featureFlag.middleware.ts):
+ * - /api/admin and all descendants (incl. admin login and the
+ *   feature-flag endpoints, so maintenance can be turned back off)
+ * - /api/health (Render / external health checks)
+ * - /api/webhooks/telegram and /api/webhooks/whatsapp (inbound
+ *   webhooks)
+ * - /api/billing/webhook (payment-provider webhook; other /api/billing
+ *   routes remain gated)
+ *
+ * OPTIONS preflight requests pass through unchanged so CORS behavior
+ * is preserved. If the feature-flag database read fails, ordinary API
+ * traffic fails CLOSED with 503; the exempt paths never perform a
+ * flag read and remain reachable. When maintenanceMode is disabled,
+ * requests simply continue with unchanged behavior.
+ */
+app.use(maintenanceModeMiddleware);
 
 /* ---------------- ROUTES ---------------- */
 
