@@ -439,56 +439,66 @@ dbTest("6a. concurrent first messages from the same chat create one conversation
   try {
     const io = captureIo();
 
+    // Two DISTINCT updates carrying the first two messages of a chat
+    // that has no conversation row yet. Both deliveries run their
+    // Conversation upsert concurrently; exactly one INSERT wins and
+    // the loser's transaction aborts with P2002 on the compound
+    // unique index. The handler must classify that race narrowly and
+    // retry in a FRESH transaction — so neither delivery may fail.
+    const bodyA = messageUpdate(900040, 101, 505, "first");
+    const bodyB = messageUpdate(900041, 102, 505, "second");
+
     const [resA, resB] = await Promise.all([
-      ctrl.telegramWebhook(
-        makeReq(sellerId, messageUpdate(900040, 101, 505, "first"), io),
-        makeRes()
-      ),
-      ctrl.telegramWebhook(
-        makeReq(sellerId, messageUpdate(900041, 102, 505, "second"), io),
-        makeRes()
-      ),
+      ctrl.telegramWebhook(makeReq(sellerId, bodyA, io), makeRes()),
+      ctrl.telegramWebhook(makeReq(sellerId, bodyB, io), makeRes()),
     ]);
 
-    // Both are distinct updates, so both may process; the response for
-    // each must be a success or a retryable busy, never a false ack.
-    for (const r of [resA, resB]) {
-      assert.ok([200, 503].includes(r.statusCode));
-    }
+    // The conversation-create race is handled inside the delivery: a
+    // 500 here would mean the P2002 escaped to the failure policy
+    // again (the original production bug this test reproduces).
+    assert.equal(
+      resA.statusCode,
+      200,
+      `first delivery must succeed via the fresh-transaction retry, got ${resA.statusCode}`
+    );
+    assert.equal(
+      resB.statusCode,
+      200,
+      `second delivery must succeed via the fresh-transaction retry, got ${resB.statusCode}`
+    );
 
     const conversations = await prisma.conversation.findMany({
       where: { sellerId, platform: "TELEGRAM", externalUserId: "505" },
     });
 
     assert.equal(conversations.length, 1, "conversation upsert conflict resolved");
+    assert.equal(await messageCount(sellerId, 505), 2, "both distinct messages persist");
+    assert.equal(conversations[0].unreadCount, 2, "unread incremented once per message");
 
-    // If one delivery observed busy, its retry would complete it; both
-    // updates were distinct so both messages eventually persist.
-    const retryNeeded = [resA, resB].some((r) => r.statusCode === 503);
+    // Exactly one event pair per successfully persisted message, and
+    // only after the transaction committed.
+    const newMessageEvents = io.events.filter(
+      (e) => e.event === "new_message"
+    );
+    const conversationEvents = io.events.filter(
+      (e) => e.event === "conversation_updated"
+    );
 
-    if (!retryNeeded) {
-      assert.equal(conversations[0].unreadCount, 2);
-      assert.equal(await messageCount(sellerId, 505), 2);
-    }
+    assert.equal(newMessageEvents.length, 2, "one new_message event per message");
+    assert.equal(
+      conversationEvents.length,
+      2,
+      "one conversation_updated event per message"
+    );
 
-    // A busy delivery must be able to complete on retry.
-    if (retryNeeded) {
-      const busyBody =
-        resA.statusCode === 503
-          ? messageUpdate(900040, 101, 505, "first")
-          : messageUpdate(900041, 102, 505, "second");
+    assert.equal(
+      new Set(newMessageEvents.map((e) => e.payload.id)).size,
+      2,
+      "each event references a distinct persisted message"
+    );
 
-      const retry = await ctrl.telegramWebhook(
-        makeReq(sellerId, busyBody, io),
-        makeRes()
-      );
-
-      assert.equal(retry.statusCode, 200);
-      assert.equal(await messageCount(sellerId, 505), 2);
-
-      const conversation = await conversationFor(sellerId, 505);
-      assert.equal(conversation.unreadCount, 2);
-    }
+    assert.equal((await ledger(sellerId, 900040)).status, "PROCESSED");
+    assert.equal((await ledger(sellerId, 900041)).status, "PROCESSED");
   } finally {
     await teardownFixtures(sellerId);
   }
@@ -515,6 +525,51 @@ dbTest("6b. an unexpected P2002 rolls back and responds retryably, marking FAILE
     const row = await ledger(sellerId, 900050);
     assert.equal(row.status, "FAILED");
     assert.equal(row.claimToken, claimToken);
+  } finally {
+    await teardownFixtures(sellerId);
+  }
+});
+
+dbTest("6c. a conversation-create-race P2002 is NOT routed to the failure policy", async () => {
+  const { sellerId } = await setupFixtures();
+
+  try {
+    // The exact error shape PostgreSQL/Prisma produces when two
+    // concurrent first-message transactions race on the Conversation
+    // compound unique index. It must be classified as the retryable
+    // race — not as an unexpected failure.
+    const raceError = Object.assign(
+      new Error("Unique constraint failed on the fields: (`sellerId`,`platform`,`externalUserId`,`externalThreadId`)"),
+      {
+        code: "P2002",
+        meta: {
+          target: [
+            "sellerId",
+            "platform",
+            "externalUserId",
+            "externalThreadId",
+          ],
+        },
+      }
+    );
+
+    assert.equal(ctrl.isConversationCreateRace(raceError), true);
+
+    // And the complementary guarantee: a Message-index P2002 (e.g. the
+    // message-id conflict) must NOT be classified as the race.
+    const messageError = Object.assign(
+      new Error("Unique constraint failed on the fields: (`conversationId`,`externalMessageId`)"),
+      {
+        code: "P2002",
+        meta: { target: ["conversationId", "externalMessageId"] },
+      }
+    );
+
+    assert.equal(ctrl.isConversationCreateRace(messageError), false);
+
+    // The retry budget is bounded; the handler reuses the same claim,
+    // so fencing still holds on every retry attempt.
+    assert.ok(ctrl.CONVERSATION_CREATE_RETRY_ATTEMPTS >= 1);
   } finally {
     await teardownFixtures(sellerId);
   }
@@ -1039,4 +1094,3 @@ dbTest("20. a bot message is acknowledged 200 after the durable PROCESSED flip a
     await teardownFixtures(sellerId);
   }
 });
-

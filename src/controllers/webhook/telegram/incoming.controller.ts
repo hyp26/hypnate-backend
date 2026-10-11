@@ -31,6 +31,17 @@ import { logger } from "../../../utils/logger";
  *   conflict inside the INSERT itself; the returned count tells us
  *   whether THIS delivery inserted the row, and unreadCount is only
  *   incremented when it did.
+ * - The ONE unique-constraint race that cannot be avoided inside a single
+ *   transaction is two concurrent FIRST messages for the same chat: both
+ *   transactions run the Conversation upsert, both find no row, and both
+ *   attempt the INSERT; PostgreSQL rejects the loser on the compound
+ *   unique index (sellerId, platform, externalUserId, externalThreadId)
+ *   with P2002, aborting its transaction. That single, narrowly
+ *   classified race is retried with a FRESH transaction (an aborted
+ *   interactive transaction must never be reused) reusing the same
+ *   updateId, claimToken and message parameters; the fresh upsert then
+ *   finds the conversation created by the winner. Every other P2002
+ *   remains an unexpected error handled retryably — never acknowledged.
  *
  * Acknowledgment policy (no durable queue exists — none is pretended):
  * - "duplicate" is acknowledged 200 ONLY after durably reading the
@@ -414,6 +425,59 @@ function isUniqueConstraintViolation(
   );
 }
 
+/*
+ * Bounded number of RETRIES (in addition to the initial attempt) for
+ * the conversation-create race classified below. Exported for tests.
+ */
+export const CONVERSATION_CREATE_RETRY_ATTEMPTS = 3;
+
+/*
+ * Narrow classification of the ONE unique-constraint race that is safe
+ * to retry with a fresh transaction: two concurrent FIRST messages for
+ * the same chat both attempt to INSERT the same Conversation row and
+ * PostgreSQL rejects the loser on the compound unique index
+ * (sellerId, platform, externalUserId, externalThreadId), aborting
+ * its transaction with P2002.
+ *
+ * Classification uses the P2002 meta.target diagnostic — it must
+ * identify THAT index. Depending on the Prisma client version,
+ * meta.target is either the constraint name (e.g.
+ * "Conversation_sellerId_platform_externalUserId_externalThreadId_key")
+ * or an array of the violating field names. Any other target (Message,
+ * TelegramWebhookUpdate, ...), any non-P2002 error, or a P2002 without
+ * a usable target does NOT qualify and remains an unexpected error
+ * handled retryably by handleProcessingFailure — never acknowledged.
+ * Exported for tests.
+ */
+export function isConversationCreateRace(
+  err: unknown
+): boolean {
+  if (!isUniqueConstraintViolation(err)) {
+    return false;
+  }
+
+  const target = (
+    err as { meta?: { target?: unknown } }
+  ).meta?.target;
+
+  if (Array.isArray(target)) {
+    const fields = target.map((f) => String(f));
+
+    return (
+      fields.includes("externalUserId") &&
+      fields.includes("externalThreadId")
+    );
+  }
+
+  const name = typeof target === "string" ? target : "";
+
+  return (
+    name.startsWith("Conversation_") &&
+    name.includes("externalUserId") &&
+    name.includes("externalThreadId")
+  );
+}
+
 function isBotMessage(
   update: ClassifiedTelegramUpdate
 ): boolean {
@@ -683,6 +747,11 @@ export type PersistInboundMessageResult =
  * unusable. unreadCount is incremented only when the INSERT reports
  * that THIS delivery inserted the row, and the fenced PROCESSED flip
  * happens in the same transaction. Exported for database tests.
+ *
+ * The Conversation upsert here is the one statement that can still
+ * collide under concurrency (two first messages for one chat): the
+ * resulting P2002 aborts THIS transaction; the caller retries the
+ * whole transaction fresh (see telegramWebhook).
  */
 export async function persistInboundMessage(
   tx: TxClient,
@@ -1081,18 +1150,61 @@ export const telegramWebhook = async (
      * The fence check inside the transaction guarantees an expired
      * worker can neither persist the message nor increment
      * unreadCount after losing its claim.
+     *
+     * Concurrent FIRST messages for the same chat race on the
+     * Conversation compound unique index; the loser's transaction
+     * aborts with a narrowly classified P2002 (see
+     * isConversationCreateRace). ONLY that race is retried here,
+     * each time with a completely FRESH transaction (the aborted one
+     * must never be reused) and the same updateId, claimToken and
+     * message parameters — the fresh upsert then finds the
+     * conversation created by the winning request. Fencing still
+     * applies on every attempt: if the claim was reclaimed
+     * meanwhile, the fenced transition throws ClaimLostError and
+     * the normal policy handles it. Every other error propagates
+     * unchanged to handleProcessingFailure.
      */
-    const result = await prisma.$transaction(async (tx) =>
-      persistInboundMessage(tx, {
-        sellerId,
-        updateId,
-        updateType: update.updateType,
-        claimToken,
-        message,
-        externalThreadId,
-        now,
-      })
-    );
+    let result: PersistInboundMessageResult | null = null;
+    let lastRaceError: unknown = null;
+
+    for (
+      let attempt = 0;
+      attempt <= CONVERSATION_CREATE_RETRY_ATTEMPTS;
+      attempt += 1
+    ) {
+      try {
+        result = await prisma.$transaction(async (tx) =>
+          persistInboundMessage(tx, {
+            sellerId,
+            updateId,
+            updateType: update.updateType,
+            claimToken,
+            message,
+            externalThreadId,
+            now,
+          })
+        );
+
+        break;
+      } catch (err) {
+        if (!isConversationCreateRace(err)) {
+          throw err;
+        }
+
+        lastRaceError = err;
+
+        logger.warn(
+          "Telegram webhook: conversation create race with a concurrent first message; retrying in a fresh transaction",
+          { sellerId, updateId, attempt: attempt + 1 }
+        );
+      }
+    }
+
+    if (result === null) {
+      // The race persisted beyond the bounded retries: treat it as
+      // the unexpected unique-constraint error it then is.
+      throw lastRaceError;
+    }
 
     if (result.duplicate) {
       // Message content already persisted; no unread increment, no events.

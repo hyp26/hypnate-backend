@@ -13,6 +13,8 @@ import {
   countEffectsAfterProcessed,
   statusForPolicy,
   acknowledgeTerminal,
+  isConversationCreateRace,
+  CONVERSATION_CREATE_RETRY_ATTEMPTS,
   TELEGRAM_CLAIM_STALE_MS,
 } from "./incoming.controller";
 
@@ -513,6 +515,67 @@ test("a failed confirmation read after a lost claim returns retryable 503, never
   );
 
   assert.equal(status, 503);
+});
+
+// ── Conversation-create race classification (narrow retry predicate) ────────
+
+function p2002(target: unknown) {
+  return Object.assign(new Error("Unique constraint failed"), {
+    code: "P2002",
+    meta: { target },
+  });
+}
+
+test("a P2002 on the Conversation compound index (field-array target) is the retryable create race", () => {
+  const err = p2002([
+    "sellerId",
+    "platform",
+    "externalUserId",
+    "externalThreadId",
+  ]);
+
+  assert.equal(isConversationCreateRace(err), true);
+});
+
+test("a P2002 naming the Conversation compound constraint (string target) is the retryable create race", () => {
+  const err = p2002(
+    "Conversation_sellerId_platform_externalUserId_externalThreadId_key"
+  );
+
+  assert.equal(isConversationCreateRace(err), true);
+});
+
+test("a P2002 on any other index is NOT classified as the conversation race", () => {
+  const messageDup = p2002(["conversationId", "externalMessageId"]);
+  const ledgerDup = p2002(["sellerId", "updateId"]);
+  const messageConstraint = p2002(
+    "Message_conversationId_externalMessageId_key"
+  );
+
+  assert.equal(isConversationCreateRace(messageDup), false);
+  assert.equal(isConversationCreateRace(ledgerDup), false);
+  assert.equal(isConversationCreateRace(messageConstraint), false);
+});
+
+test("a P2002 without a usable target is NOT classified as the conversation race", () => {
+  assert.equal(isConversationCreateRace(p2002(undefined)), false);
+  assert.equal(isConversationCreateRace(p2002(null)), false);
+  assert.equal(isConversationCreateRace(p2002(42)), false);
+});
+
+test("non-P2002 errors are never classified as the conversation race", () => {
+  assert.equal(isConversationCreateRace(new Error("connection reset")), false);
+  assert.equal(isConversationCreateRace({ code: "P2003" }), false);
+  assert.equal(isConversationCreateRace(null), false);
+});
+
+test("the conversation-create retry budget is bounded and small", () => {
+  assert.ok(
+    Number.isInteger(CONVERSATION_CREATE_RETRY_ATTEMPTS) &&
+      CONVERSATION_CREATE_RETRY_ATTEMPTS > 0 &&
+      CONVERSATION_CREATE_RETRY_ATTEMPTS <= 5,
+    "retries must be a small bounded number"
+  );
 });
 
 // ── Placeholder-reply regression ───────────────────────────────────────────
