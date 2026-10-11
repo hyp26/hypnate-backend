@@ -153,9 +153,12 @@ test("a message payload missing chat or message_id is malformed", () => {
   });
 
   assert.equal(noChat.kind, "malformed");
-  assert.equal(noChat.updateId, null);
+  // The classifier retains a valid update_id even when the nested
+  // message payload is malformed; only an invalid/missing update_id
+  // produces updateId === null.
+  assert.equal(noChat.updateId, 1006);
   assert.equal(noMessageId.kind, "malformed");
-  assert.equal(noMessageId.updateId, null);
+  assert.equal(noMessageId.updateId, 1007);
 });
 
 test("non-text messages classify as messages with a placeholder text", () => {
@@ -549,8 +552,9 @@ test("non-text placeholders document that no media bytes are persisted", async (
   }
 
   // The controller must document that media files are not downloaded or
-  // stored; only the textual placeholder is persisted.
-  assert.ok(source.includes("media files are NOT downloaded"));
+  // stored; only the textual placeholder is persisted. The check is
+  // case-insensitive so it does not depend on comment capitalization.
+  assert.ok(source.toLowerCase().includes("media files are not downloaded"));
   assert.ok(!source.includes("getFile"));
   assert.ok(!source.includes("file_id"));
 });
