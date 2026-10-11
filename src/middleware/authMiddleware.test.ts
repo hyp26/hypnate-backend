@@ -149,9 +149,16 @@ describe("verifyToken seller-suspension enforcement", () => {
     assert.equal(r.reqUser?.sellerId, null);
   });
 
-  it("preserves existing behavior when the seller record is missing", async () => {
+  it("rejects a numeric sellerId whose seller record is missing", async () => {
+    // A token referencing a deleted seller must not authenticate.
     const r = await runVerify(sellerToken, null);
-    assert.equal(r.allowed, true);
+    assert.equal(r.allowed, false);
+    assert.equal(r.status, 401);
+    assert.equal(
+      r.body.message,
+      "Invalid or expired authentication token",
+    );
+    assert.equal(r.reqUser, undefined);
   });
 
   it("fails closed when the status lookup throws", async () => {

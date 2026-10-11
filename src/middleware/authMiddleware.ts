@@ -144,9 +144,7 @@ export const createVerifyToken =
      *
      * A valid JWT alone is no longer enough once the admin has
      * suspended the seller. Users without a seller attachment
-     * (admins, sellerId === null) are not affected, and a
-     * missing seller record does not change the existing
-     * allow behavior for such accounts.
+     * (admins, sellerId === null) are not affected.
      */
     if (typeof payload.sellerId === "number") {
       const loadSellerStatus =
@@ -162,7 +160,19 @@ export const createVerifyToken =
         return;
       }
 
-      if (seller && isSellerBlocked(seller.status)) {
+      /*
+       * A token referencing a seller that no longer exists must
+       * not authenticate. Use the standard invalid-token response
+       * so no internal detail is exposed.
+       */
+      if (!seller) {
+        res.status(401).json({
+          message: "Invalid or expired authentication token",
+        });
+        return;
+      }
+
+      if (isSellerBlocked(seller.status)) {
         res.status(403).json({
           message: "This account is suspended. Please contact support.",
           code: "ACCOUNT_SUSPENDED",
