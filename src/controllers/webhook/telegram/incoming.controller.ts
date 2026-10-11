@@ -32,6 +32,17 @@ import { logger } from "../../../utils/logger";
  *   whether THIS delivery inserted the row, and unreadCount is only
  *   incremented when it did.
  *
+ * Acknowledgment policy (no durable queue exists — none is pretended):
+ * - "duplicate" is acknowledged 200 ONLY after durably reading the
+ *   ledger row as PROCESSED.
+ * - "busy" (another worker still processing) is NOT proof of persistence:
+ *   the response is 503 so Telegram retries. When the owner finishes, a
+ *   retry observes PROCESSED and is acknowledged 200. If the owner fails,
+ *   the row becomes FAILED and the retry reclaims and completes it.
+ * - ClaimLostError is acknowledged 200 ONLY when the ledger row is
+ *   durably PROCESSED; otherwise 503, never touching the new owner's
+ *   state.
+ *
  * Non-text Telegram messages: only a textual placeholder like
  * "[Telegram photo message]" is persisted (mirroring the WhatsApp
  * convention). Media files are NOT downloaded, stored, or referenced —
@@ -96,6 +107,36 @@ export type TerminalTransitionResult =
   | "marked"
   | "lost"
   | "db_error";
+
+/*
+ * Response policy for a webhook delivery after processing:
+ * - "acknowledge": HTTP 200. Used ONLY when the update's completion is
+ *   durably confirmed (ledger row PROCESSED) or our own fenced writes
+ *   committed.
+ * - "retry": HTTP 500. Processing failed; the claim was marked FAILED
+ *   through a fenced transition. Telegram retries; the FAILED row is
+ *   reclaimable.
+ * - "retry_in_flight": HTTP 503. Another worker owns the claim and its
+ *   completion is NOT confirmed. No state was modified by us. Telegram
+ *   retries; a later retry observes the durable outcome.
+ */
+export type WebhookResponsePolicy =
+  | "acknowledge"
+  | "retry"
+  | "retry_in_flight";
+
+/*
+ * Pure mapping from response policy to HTTP status. Exported for tests.
+ */
+export function statusForPolicy(
+  policy: WebhookResponsePolicy
+): number {
+  if (policy === "acknowledge") {
+    return 200;
+  }
+
+  return policy === "retry" ? 500 : 503;
+}
 
 const KNOWN_UPDATE_KEYS = [
   "message",
@@ -412,6 +453,9 @@ type TxClient = {
  * Returns the acquisition outcome plus the token that fences all
  * subsequent state transitions for this attempt. Exported for
  * database-backed tests.
+ *
+ * "duplicate" is returned ONLY after a durable read confirms the row
+ * is PROCESSED — never on the mere existence of a row.
  */
 export async function acquireClaim(
   sellerId: number,
@@ -471,6 +515,11 @@ export async function acquireClaim(
     return { outcome: "owned", claimToken };
   }
 
+  /*
+   * Durable confirmation: read the row. Only a PROCESSED row may be
+   * acknowledged as a duplicate; a fresh PROCESSING row belongs to
+   * another in-flight worker and is NOT proof of persistence.
+   */
   const existing = await prisma.telegramWebhookUpdate.findUnique({
     where: {
       sellerId_updateId: { sellerId, updateId },
@@ -482,11 +531,6 @@ export async function acquireClaim(
     return { outcome: "duplicate", claimToken };
   }
 
-  /*
-   * Fresh PROCESSING row owned by another in-flight request, or the
-   * row was concurrently reclaimed between our attempt and this read.
-   * Either way, this delivery must not process.
-   */
   return { outcome: "busy", claimToken };
 }
 
@@ -702,16 +746,20 @@ export async function persistInboundMessage(
 
 /*
  * Response policy for a processing failure. Distinguishes:
- * - "acknowledge" (HTTP 200): our claim was taken over by another
- *   worker; our writes rolled back and the new owner is responsible.
+ * - "acknowledge" (HTTP 200): for ClaimLostError, ONLY when the ledger
+ *   row is durably confirmed PROCESSED (the new owner finished). Our
+ *   own writes rolled back, and the completed state is proven.
+ * - "retry_in_flight" (HTTP 503): for ClaimLostError when completion
+ *   is NOT confirmed. Another worker owns the claim; we modify nothing
+ *   and let Telegram retry until the durable outcome exists.
  * - "retry" (HTTP 500): the work was NOT persisted (including an
  *   unexpected unique-constraint error that aborted the transaction).
  *   The claim is marked FAILED through a fenced transition so we never
  *   overwrite another worker's claim, and Telegram retries safely.
  *   If even the FAILED marking fails, the row stays PROCESSING until
  *   the stale window passes, after which reclamation is still safe —
- *   but we still respond 500 because success must never be reported
- *   for a message that was not persisted.
+ *   but we still respond retryably because success must never be
+ *   reported for a message that was not persisted.
  * Exported for database tests.
  */
 export async function handleProcessingFailure(
@@ -719,9 +767,32 @@ export async function handleProcessingFailure(
   updateId: number,
   claimToken: string,
   err: unknown
-): Promise<"acknowledge" | "retry"> {
+): Promise<WebhookResponsePolicy> {
   if (err instanceof ClaimLostError) {
-    return "acknowledge";
+    /*
+     * Durable confirmation only: acknowledge 200 solely when the row
+     * is PROCESSED. If the confirmation read itself fails, fall back
+     * to retryable — never acknowledge without proof.
+     */
+    try {
+      const row = await prisma.telegramWebhookUpdate.findUnique({
+        where: {
+          sellerId_updateId: { sellerId, updateId },
+        },
+        select: { status: true },
+      });
+
+      return row?.status === "PROCESSED"
+        ? "acknowledge"
+        : "retry_in_flight";
+    } catch (confirmErr) {
+      logger.error(
+        "Telegram webhook: claim-loss confirmation read failed; responding retryably",
+        { sellerId, updateId, err: confirmErr }
+      );
+
+      return "retry_in_flight";
+    }
   }
 
   if (isUniqueConstraintViolation(err)) {
@@ -810,9 +881,24 @@ export const telegramWebhook = async (
 
     claimToken = token;
 
-    if (outcome === "duplicate" || outcome === "busy") {
-      // Already processed or owned by an in-flight request.
+    if (outcome === "duplicate") {
+      /*
+       * Durably confirmed PROCESSED by acquireClaim's read. All
+       * effects are already persisted; acknowledge with no side
+       * effects.
+       */
       return res.sendStatus(200);
+    }
+
+    if (outcome === "busy") {
+      /*
+       * Another worker still owns the claim. This is NOT proof of
+       * successful persistence — there is no durable queue handing
+       * off the work, so do not acknowledge. Respond 503; Telegram
+       * retries, and a later retry observes the durable outcome
+       * (200 once PROCESSED, or reclaims once FAILED/stale).
+       */
+      return res.sendStatus(503);
     }
 
     if (isBotMessage(update)) {
@@ -990,6 +1076,6 @@ export const telegramWebhook = async (
       err
     );
 
-    return res.sendStatus(policy === "acknowledge" ? 200 : 500);
+    return res.sendStatus(statusForPolicy(policy));
   }
 };

@@ -14,23 +14,27 @@ import assert from "node:assert/strict";
  * When TEST_DATABASE_URL is absent, every test skips with an explicit
  * reason — nothing is silently passed. The pure-logic tests in
  * incoming.controller.test.ts remain as supplementary coverage.
+ *
+ * CommonJS note: this file uses require() (not top-level await import)
+ * so it compiles under the project's "module": "CommonJS" tsc config
+ * and runs against the compiled dist output. TEST_DATABASE_URL is
+ * assigned to DATABASE_URL BEFORE the Prisma client is loaded.
  */
 
 const DB_URL = process.env.TEST_DATABASE_URL;
 
 if (DB_URL) {
   // Point the shared Prisma client at the disposable test database
-  // before the controller module is loaded.
+  // before the client (and the controller) are loaded.
   process.env.DATABASE_URL = DB_URL;
 }
 
-const ctrl = DB_URL
-  ? await import("./incoming.controller")
-  : null;
-
+/* eslint-disable @typescript-eslint/no-var-requires */
+const ctrl = DB_URL ? require("./incoming.controller") : null;
 const prisma = DB_URL
-  ? (await import("../../../prisma/client")).default
+  ? require("../../../prisma/client").default
   : null;
+/* eslint-enable @typescript-eslint/no-var-requires */
 
 const RUN = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
 
@@ -67,7 +71,7 @@ async function teardownFixtures(sellerId: number) {
   await prisma.message.deleteMany({
     where: {
       conversationId: {
-        in: conversations.map((c) => c.id),
+        in: conversations.map((c: { id: number }) => c.id),
       },
     },
   });
@@ -141,18 +145,34 @@ async function messageCount(sellerId: number, chatId: number) {
   });
 }
 
+async function conversationFor(sellerId: number, chatId: number) {
+  return prisma.conversation.findFirst({
+    where: {
+      sellerId,
+      platform: "TELEGRAM" as const,
+      externalUserId: String(chatId),
+    },
+  });
+}
+
 async function ledger(sellerId: number, updateId: number) {
   return prisma.telegramWebhookUpdate.findUnique({
     where: { sellerId_updateId: { sellerId, updateId } },
   });
 }
 
-const dbTest = (name: string, fn: (t: any) => Promise<void>) =>
+const dbTest = (name: string, fn: () => Promise<void>) =>
   test(
     name,
-    { skip: DB_URL ? false : "TEST_DATABASE_URL not set — database tests skipped (not run, not passed)" },
+    {
+      skip: DB_URL
+        ? false
+        : "TEST_DATABASE_URL not set — database tests skipped (not run, not passed)",
+    },
     fn
   );
+
+// ── Concurrency and idempotency (real database) ─────────────────────────────
 
 dbTest("1. concurrent deliveries of the same update ID persist exactly one message", async () => {
   const { sellerId } = await setupFixtures();
@@ -166,19 +186,15 @@ dbTest("1. concurrent deliveries of the same update ID persist exactly one messa
       ctrl.telegramWebhook(makeReq(sellerId, body, io), makeRes()),
     ]);
 
-    assert.equal(resA.statusCode, 200);
-    assert.equal(resB.statusCode, 200);
+    // Exactly one worker owns the claim (200); the loser observes busy
+    // and receives a retryable 503 — never a premature acknowledgment.
+    const codes = [resA.statusCode, resB.statusCode].sort();
+    assert.equal(codes[0], 200);
+    assert.equal(codes[1], 503);
 
     assert.equal(await messageCount(sellerId, 501), 1);
 
-    const conversation = await prisma.conversation.findFirst({
-      where: {
-        sellerId,
-        platform: "TELEGRAM",
-        externalUserId: "501",
-      },
-    });
-
+    const conversation = await conversationFor(sellerId, 501);
     assert.ok(conversation);
     assert.equal(conversation.unreadCount, 1);
 
@@ -271,10 +287,7 @@ dbTest("3. two update IDs referring to the same Telegram message insert at most 
 
     assert.equal(await messageCount(sellerId, 502), 1);
 
-    const conversation = await prisma.conversation.findFirst({
-      where: { sellerId, platform: "TELEGRAM", externalUserId: "502" },
-    });
-
+    const conversation = await conversationFor(sellerId, 502);
     assert.equal(conversation.unreadCount, 1, "unread incremented once only");
     assert.equal(
       io.events.filter((e) => e.event === "new_message").length,
@@ -294,18 +307,16 @@ dbTest("4. a duplicate-message conflict inside the transaction does not abort it
 
   try {
     // Pre-existing legacy row with the same (conversationId, externalMessageId).
+    const connection = await prisma.channelConnection.findFirst({
+      where: { sellerId, platform: "TELEGRAM" },
+    });
+
     const conversation = await prisma.conversation.create({
       data: {
         sellerId,
         platform: "TELEGRAM",
         externalUserId: "503",
-        externalThreadId: String(
-          (
-            await prisma.channelConnection.findFirst({
-              where: { sellerId, platform: "TELEGRAM" },
-            })
-          ).id
-        ),
+        externalThreadId: String(connection.id),
         customerName: "Legacy",
       },
     });
@@ -367,7 +378,7 @@ dbTest("5. losing the claim mid-persistence rolls back every write", async () =>
           updateId: 900030,
           updateType: update.updateType,
           claimToken,
-          message: update.message!,
+          message: update.message,
           externalThreadId: String(connectionId),
           now: new Date(),
         })
@@ -403,16 +414,45 @@ dbTest("6a. concurrent first messages from the same chat create one conversation
       ),
     ]);
 
-    assert.equal(resA.statusCode, 200);
-    assert.equal(resB.statusCode, 200);
+    // Both are distinct updates, so both may process; the response for
+    // each must be a success or a retryable busy, never a false ack.
+    for (const r of [resA, resB]) {
+      assert.ok([200, 503].includes(r.statusCode));
+    }
 
     const conversations = await prisma.conversation.findMany({
       where: { sellerId, platform: "TELEGRAM", externalUserId: "505" },
     });
 
     assert.equal(conversations.length, 1, "conversation upsert conflict resolved");
-    assert.equal(conversations[0].unreadCount, 2);
-    assert.equal(await messageCount(sellerId, 505), 2);
+
+    // If one delivery observed busy, its retry would complete it; both
+    // updates were distinct so both messages eventually persist.
+    const retryNeeded = [resA, resB].some((r) => r.statusCode === 503);
+
+    if (!retryNeeded) {
+      assert.equal(conversations[0].unreadCount, 2);
+      assert.equal(await messageCount(sellerId, 505), 2);
+    }
+
+    // A busy delivery must be able to complete on retry.
+    if (retryNeeded) {
+      const busyBody =
+        resA.statusCode === 503
+          ? messageUpdate(900040, 101, 505, "first")
+          : messageUpdate(900041, 102, 505, "second");
+
+      const retry = await ctrl.telegramWebhook(
+        makeReq(sellerId, busyBody, io),
+        makeRes()
+      );
+
+      assert.equal(retry.statusCode, 200);
+      assert.equal(await messageCount(sellerId, 505), 2);
+
+      const conversation = await conversationFor(sellerId, 505);
+      assert.equal(conversation.unreadCount, 2);
+    }
   } finally {
     await teardownFixtures(sellerId);
   }
@@ -434,6 +474,7 @@ dbTest("6b. an unexpected P2002 rolls back and responds retryably, marking FAILE
     );
 
     assert.equal(policy, "retry");
+    assert.equal(ctrl.statusForPolicy(policy), 500);
 
     const row = await ledger(sellerId, 900050);
     assert.equal(row.status, "FAILED");
@@ -479,6 +520,7 @@ dbTest("7. a database failure during a PROCESSED transition propagates and never
     );
 
     assert.equal(policy, "retry");
+    assert.equal(ctrl.statusForPolicy(policy), 500);
 
     const row = await ledger(sellerId, 900060);
     assert.equal(row.claimToken, "reclaimer", "reclaimer's claim not overwritten");
@@ -510,7 +552,7 @@ dbTest("8. retry after a rolled-back transaction succeeds exactly once", async (
           updateId: 900070,
           updateType: update.updateType,
           claimToken: first.claimToken,
-          message: update.message!,
+          message: update.message,
           externalThreadId: String(connectionId),
           now: new Date(),
         })
@@ -524,7 +566,10 @@ dbTest("8. retry after a rolled-back transaction succeeds exactly once", async (
     // reclaims and completes exactly once.
     await prisma.telegramWebhookUpdate.update({
       where: { sellerId_updateId: { sellerId, updateId: 900070 } },
-      data: { status: "FAILED", updatedAt: new Date(Date.now() - ctrl.TELEGRAM_CLAIM_STALE_MS - 1000) },
+      data: {
+        status: "FAILED",
+        updatedAt: new Date(Date.now() - ctrl.TELEGRAM_CLAIM_STALE_MS - 1000),
+      },
     });
 
     const io = captureIo();
@@ -536,10 +581,7 @@ dbTest("8. retry after a rolled-back transaction succeeds exactly once", async (
     assert.equal(res.statusCode, 200);
     assert.equal(await messageCount(sellerId, 506), 1);
 
-    const conversation = await prisma.conversation.findFirst({
-      where: { sellerId, platform: "TELEGRAM", externalUserId: "506" },
-    });
-
+    const conversation = await conversationFor(sellerId, 506);
     assert.equal(conversation.unreadCount, 1);
     assert.equal(
       io.events.filter((e) => e.event === "new_message").length,
@@ -565,10 +607,7 @@ dbTest("9. one successful delivery produces exactly one message, one unread incr
     assert.equal(res.statusCode, 200);
     assert.equal(await messageCount(sellerId, 507), 1);
 
-    const conversation = await prisma.conversation.findFirst({
-      where: { sellerId, platform: "TELEGRAM", externalUserId: "507" },
-    });
-
+    const conversation = await conversationFor(sellerId, 507);
     assert.equal(conversation.unreadCount, 1);
 
     const newMessageEvents = io.events.filter(
@@ -582,6 +621,222 @@ dbTest("9. one successful delivery produces exactly one message, one unread incr
     assert.equal(newMessageEvents[0].room, `room_${conversation.id}`);
     assert.equal(conversationEvents.length, 1);
     assert.equal(conversationEvents[0].room, `seller_${sellerId}`);
+  } finally {
+    await teardownFixtures(sellerId);
+  }
+});
+
+// ── Response decisions and state transitions (real database) ────────────────
+
+dbTest("10. a previously processed update returns HTTP 200 without side effects", async () => {
+  const { sellerId } = await setupFixtures();
+
+  try {
+    const io = captureIo();
+    const body = messageUpdate(900100, 130, 508, "once only");
+
+    const first = await ctrl.telegramWebhook(
+      makeReq(sellerId, body, io),
+      makeRes()
+    );
+    assert.equal(first.statusCode, 200);
+
+    const before = await conversationFor(sellerId, 508);
+    const beforeEvents = io.events.length;
+
+    // Subsequent retries return 200 once durably processed.
+    const retry = await ctrl.telegramWebhook(
+      makeReq(sellerId, body, io),
+      makeRes()
+    );
+
+    assert.equal(retry.statusCode, 200);
+    assert.equal(await messageCount(sellerId, 508), 1);
+
+    const after = await conversationFor(sellerId, 508);
+    assert.equal(after.unreadCount, before.unreadCount, "no extra unread increment");
+    assert.equal(io.events.length, beforeEvents, "no repeated socket events");
+    assert.equal((await ledger(sellerId, 900100)).status, "PROCESSED");
+  } finally {
+    await teardownFixtures(sellerId);
+  }
+});
+
+dbTest("11. a duplicate delivery during fresh PROCESSING is NOT acknowledged prematurely", async () => {
+  const { sellerId } = await setupFixtures();
+
+  try {
+    // Simulate another worker currently processing this update.
+    await prisma.telegramWebhookUpdate.create({
+      data: {
+        sellerId,
+        updateId: 900110,
+        status: "PROCESSING",
+        claimToken: "in-flight-worker",
+      },
+    });
+
+    const io = captureIo();
+    const res = await ctrl.telegramWebhook(
+      makeReq(sellerId, messageUpdate(900110, 131, 509, "in flight"), io),
+      makeRes()
+    );
+
+    // Busy is not proof of persistence: retryable non-2xx, never 200.
+    assert.equal(res.statusCode, 503);
+
+    assert.equal(await messageCount(sellerId, 509), 0, "no side effects");
+    assert.equal(io.events.length, 0, "no socket events");
+
+    const row = await ledger(sellerId, 900110);
+    assert.equal(row.status, "PROCESSING");
+    assert.equal(row.claimToken, "in-flight-worker", "owner state untouched");
+  } finally {
+    await teardownFixtures(sellerId);
+  }
+});
+
+dbTest("12. a failed original worker yields a retryable response; a later retry completes the update", async () => {
+  const { sellerId } = await setupFixtures();
+
+  try {
+    const { claimToken } = await ctrl.acquireClaim(sellerId, 900120, new Date());
+
+    // The original worker fails mid-processing (e.g. transient DB error).
+    const policy = await ctrl.handleProcessingFailure(
+      sellerId,
+      900120,
+      claimToken,
+      new Error("transient outage")
+    );
+
+    assert.equal(policy, "retry");
+    assert.equal(ctrl.statusForPolicy(policy), 500, "retryable response");
+
+    const row = await ledger(sellerId, 900120);
+    assert.equal(row.status, "FAILED", "claim is reclaimable");
+
+    // Telegram retries; the retry reclaims the FAILED row and completes.
+    const io = captureIo();
+    const retry = await ctrl.telegramWebhook(
+      makeReq(sellerId, messageUpdate(900120, 132, 510, "retry me"), io),
+      makeRes()
+    );
+
+    assert.equal(retry.statusCode, 200);
+    assert.equal(await messageCount(sellerId, 510), 1);
+
+    const conversation = await conversationFor(sellerId, 510);
+    assert.equal(conversation.unreadCount, 1);
+    assert.equal((await ledger(sellerId, 900120)).status, "PROCESSED");
+  } finally {
+    await teardownFixtures(sellerId);
+  }
+});
+
+dbTest("13. after the new owner processes the update, later deliveries are acknowledged without duplicates", async () => {
+  const { sellerId } = await setupFixtures();
+
+  try {
+    const io = captureIo();
+    const body = messageUpdate(900130, 133, 511, "owner wins");
+
+    // New owner completes the update.
+    const owned = await ctrl.telegramWebhook(
+      makeReq(sellerId, body, io),
+      makeRes()
+    );
+    assert.equal(owned.statusCode, 200);
+
+    const before = await conversationFor(sellerId, 511);
+    const beforeEvents = io.events.length;
+
+    // Later deliveries of the same update are acknowledged (durable
+    // PROCESSED) with no duplicate message or unread increment.
+    const later = await ctrl.telegramWebhook(
+      makeReq(sellerId, body, io),
+      makeRes()
+    );
+
+    assert.equal(later.statusCode, 200);
+    assert.equal(await messageCount(sellerId, 511), 1);
+
+    const after = await conversationFor(sellerId, 511);
+    assert.equal(after.unreadCount, before.unreadCount);
+    assert.equal(io.events.length, beforeEvents, "no duplicate events");
+  } finally {
+    await teardownFixtures(sellerId);
+  }
+});
+
+dbTest("14. a worker that lost its claim cannot overwrite the new owner's state", async () => {
+  const { sellerId } = await setupFixtures();
+
+  try {
+    const expired = await ctrl.acquireClaim(sellerId, 900140, new Date());
+
+    // Another worker reclaims the claim.
+    await prisma.telegramWebhookUpdate.update({
+      where: { sellerId_updateId: { sellerId, updateId: 900140 } },
+      data: { claimToken: "new-owner" },
+    });
+
+    // The expired worker's failure handling must not touch the row:
+    // its fenced FAILED transition matches zero rows.
+    const policy = await ctrl.handleProcessingFailure(
+      sellerId,
+      900140,
+      expired.claimToken,
+      new Error("expired worker crash")
+    );
+
+    assert.equal(policy, "retry");
+
+    const row = await ledger(sellerId, 900140);
+    assert.equal(row.status, "PROCESSING", "new owner's state preserved");
+    assert.equal(row.claimToken, "new-owner");
+  } finally {
+    await teardownFixtures(sellerId);
+  }
+});
+
+dbTest("15. a ClaimLostError is acknowledged only when the update is durably PROCESSED", async () => {
+  const { sellerId } = await setupFixtures();
+
+  try {
+    const expired = await ctrl.acquireClaim(sellerId, 900150, new Date());
+
+    // Claim lost, new owner still working: not confirmed → retryable.
+    await prisma.telegramWebhookUpdate.update({
+      where: { sellerId_updateId: { sellerId, updateId: 900150 } },
+      data: { claimToken: "new-owner" },
+    });
+
+    const inFlight = await ctrl.handleProcessingFailure(
+      sellerId,
+      900150,
+      expired.claimToken,
+      new ctrl.ClaimLostError()
+    );
+
+    assert.equal(inFlight, "retry_in_flight");
+    assert.equal(ctrl.statusForPolicy(inFlight), 503, "retryable, never 200");
+
+    // New owner finishes: now the same lost worker would be acknowledged.
+    await prisma.telegramWebhookUpdate.update({
+      where: { sellerId_updateId: { sellerId, updateId: 900150 } },
+      data: { status: "PROCESSED" },
+    });
+
+    const confirmed = await ctrl.handleProcessingFailure(
+      sellerId,
+      900150,
+      expired.claimToken,
+      new ctrl.ClaimLostError()
+    );
+
+    assert.equal(confirmed, "acknowledge");
+    assert.equal(ctrl.statusForPolicy(confirmed), 200);
   } finally {
     await teardownFixtures(sellerId);
   }
