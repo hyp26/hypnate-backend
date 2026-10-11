@@ -28,11 +28,12 @@ import { logger } from "../utils/logger";
  *    operable while maintenance is on:
  *      - /api/admin (and all descendants, incl. admin login and the
  *        feature-flag endpoints, so an admin can turn maintenance off)
- *      - /api/health (Render / external health checks)
+ *      - /api/health (Render / external health checks — EXACT path
+ *        only, descendants stay gated)
  *      - /api/webhooks/telegram (inbound Telegram webhooks)
  *      - /api/webhooks/whatsapp (inbound WhatsApp webhooks)
- *      - /api/billing/webhook (payment-provider webhook, exact path —
- *        other /api/billing routes stay gated)
+ *      - /api/billing/webhook (payment-provider webhook — EXACT path
+ *        only; other /api/billing routes stay gated)
  *    OPTIONS preflight requests always pass through unchanged so CORS
  *    behavior is preserved. Non-API paths (static assets) are not
  *    gated.
@@ -55,14 +56,25 @@ export type FeatureFlagsReader = () => Promise<FeatureFlags>;
 
 /*
  * Paths that must remain reachable while maintenance mode is enabled
- * (or while the flag store is unreadable). Exact prefixes; descendants
- * are covered via the trailing-slash check in isMaintenanceExempt().
+ * (or while the flag store is unreadable), together with all of their
+ * descendants. Prefix matching is boundary-safe: only the exact path
+ * or a "/"-suffixed descendant matches ("/api/admin" covers
+ * "/api/admin/settings" but NOT "/api/administration").
  */
 export const MAINTENANCE_EXEMPT_PREFIXES: ReadonlyArray<string> = [
   "/api/admin",
-  "/api/health",
   "/api/webhooks/telegram",
   "/api/webhooks/whatsapp",
+];
+
+/*
+ * Exemptions that apply to the EXACT path only — descendants stay
+ * gated. Health checks and payment-provider webhooks register a single
+ * fixed endpoint; unrelated nested paths below them must NOT bypass
+ * maintenance mode.
+ */
+export const MAINTENANCE_EXEMPT_EXACT_PATHS: ReadonlyArray<string> = [
+  "/api/health",
   "/api/billing/webhook",
 ];
 
@@ -83,14 +95,28 @@ export const REGISTRATION_DISABLED_BODY = {
 } as const;
 
 /*
- * Exact-prefix match: the path itself or a descendant
- * ("/api/admin" matches "/api/admin" and "/api/admin/settings" but
- * NOT "/api/administration"). Exported for tests.
+ * Exemption match: exact-path entries match only themselves; prefix
+ * entries match the path itself or a "/"-boundary descendant.
+ * Exported for tests.
  */
 export function isMaintenanceExempt(path: string): boolean {
+  if (MAINTENANCE_EXEMPT_EXACT_PATHS.includes(path)) {
+    return true;
+  }
+
   return MAINTENANCE_EXEMPT_PREFIXES.some(
     (prefix) => path === prefix || path.startsWith(`${prefix}/`)
   );
+}
+
+/*
+ * The gated surface is the API: the path "/api" itself or any path
+ * beginning with the "/api/" segment. A path like "/apiculture" merely
+ * starting with the characters "/api" is NOT part of the API surface.
+ * Exported for tests.
+ */
+export function isApiSurface(path: string): boolean {
+  return path === "/api" || path.startsWith("/api/");
 }
 
 /* ----------------------------------------------------
@@ -156,10 +182,11 @@ export const createMaintenanceMiddleware = (
     const path = req.path ?? "";
 
     /*
-     * Only the API surface is gated. Static assets and non-API paths
-     * pass through with unchanged behavior.
+     * Only the API surface is gated ("/api" itself or paths beginning
+     * with the "/api/" segment). Static assets and non-API paths pass
+     * through with unchanged behavior.
      */
-    if (!path.startsWith("/api")) {
+    if (!isApiSurface(path)) {
       return next();
     }
 
