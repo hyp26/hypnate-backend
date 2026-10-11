@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   createMaintenanceMiddleware,
   createRegistrationFlagMiddleware,
+  isApiSurface,
   isMaintenanceExempt,
   MAINTENANCE_MODE_BODY,
   REGISTRATION_DISABLED_BODY,
@@ -115,11 +116,20 @@ describe("isMaintenanceExempt", () => {
     assert.equal(isMaintenanceExempt("/api/billing/webhook"), true);
   });
 
-  it("matches descendants of exempt paths", () => {
+  it("matches descendants of prefix-exempt paths", () => {
     assert.equal(isMaintenanceExempt("/api/admin/settings"), true);
     assert.equal(isMaintenanceExempt("/api/admin/auth/login"), true);
     assert.equal(isMaintenanceExempt("/api/admin/feature-flags"), true);
     assert.equal(isMaintenanceExempt("/api/webhooks/telegram/1"), true);
+    assert.equal(isMaintenanceExempt("/api/webhooks/whatsapp/12"), true);
+  });
+
+  it("does NOT exempt descendants of exact-path exemptions", () => {
+    assert.equal(isMaintenanceExempt("/api/health/anything"), false);
+    assert.equal(
+      isMaintenanceExempt("/api/billing/webhook/anything"),
+      false
+    );
   });
 
   it("does NOT whitelist unrelated near-miss paths", () => {
@@ -130,6 +140,23 @@ describe("isMaintenanceExempt", () => {
     assert.equal(isMaintenanceExempt("/api/healthy"), false);
     assert.equal(isMaintenanceExempt("/api/products"), false);
     assert.equal(isMaintenanceExempt("/api/auth/register"), false);
+  });
+});
+
+/* ----------------------------------------------------
+   API-SURFACE BOUNDARY
+---------------------------------------------------- */
+
+describe("isApiSurface", () => {
+  it("gates '/api' itself and paths under the '/api/' segment", () => {
+    assert.equal(isApiSurface("/api"), true);
+    assert.equal(isApiSurface("/api/products"), true);
+  });
+
+  it("does NOT treat mere character-prefix lookalikes as API paths", () => {
+    assert.equal(isApiSurface("/apiculture"), false);
+    assert.equal(isApiSurface("/apiary"), false);
+    assert.equal(isApiSurface("/uploads/logo.svg"), false);
   });
 });
 
@@ -163,6 +190,13 @@ describe("maintenance middleware decisions", () => {
       assert.equal(result.outcome, "responded", path);
       assert.equal(result.statusCode, 503, path);
     }
+  });
+
+  it("enabled mode blocks the '/api' root itself", async () => {
+    const result = await drive(maintenance, makeReq("GET", "/api"));
+
+    assert.equal(result.outcome, "responded");
+    assert.equal(result.statusCode, 503);
   });
 
   it("disabled mode calls next() with unchanged behavior", async () => {
@@ -210,6 +244,20 @@ describe("maintenance middleware decisions", () => {
     assert.equal(whatsapp.outcome, "next");
   });
 
+  it("descendants of the webhook exemptions remain accessible", async () => {
+    const telegram = await drive(
+      maintenance,
+      makeReq("POST", "/api/webhooks/telegram/12345")
+    );
+    const whatsapp = await drive(
+      maintenance,
+      makeReq("POST", "/api/webhooks/whatsapp/98765/status")
+    );
+
+    assert.equal(telegram.outcome, "next");
+    assert.equal(whatsapp.outcome, "next");
+  });
+
   it("the payment-provider billing webhook remains accessible", async () => {
     const result = await drive(
       maintenance,
@@ -217,6 +265,28 @@ describe("maintenance middleware decisions", () => {
     );
 
     assert.equal(result.outcome, "next");
+  });
+
+  it("descendants of /api/billing/webhook are NOT exempt", async () => {
+    const result = await drive(
+      maintenance,
+      makeReq("POST", "/api/billing/webhook/anything")
+    );
+
+    assert.equal(result.outcome, "responded");
+    assert.equal(result.statusCode, 503);
+    assert.deepEqual(result.body, { ...MAINTENANCE_MODE_BODY });
+  });
+
+  it("descendants of /api/health are NOT exempt", async () => {
+    const result = await drive(
+      maintenance,
+      makeReq("GET", "/api/health/anything")
+    );
+
+    assert.equal(result.outcome, "responded");
+    assert.equal(result.statusCode, 503);
+    assert.deepEqual(result.body, { ...MAINTENANCE_MODE_BODY });
   });
 
   it("other /api/billing routes are NOT whitelisted", async () => {
@@ -277,6 +347,24 @@ describe("maintenance middleware decisions", () => {
     assert.deepEqual(result.body, { ...SERVICE_UNAVAILABLE_BODY });
   });
 
+  it("non-exempt descendants of exact-path exemptions fail CLOSED too", async () => {
+    const healthChild = await drive(
+      failClosed,
+      makeReq("GET", "/api/health/anything")
+    );
+    const billingChild = await drive(
+      failClosed,
+      makeReq("POST", "/api/billing/webhook/anything")
+    );
+
+    assert.equal(healthChild.outcome, "responded");
+    assert.equal(healthChild.statusCode, 503);
+    assert.deepEqual(healthChild.body, { ...SERVICE_UNAVAILABLE_BODY });
+    assert.equal(billingChild.outcome, "responded");
+    assert.equal(billingChild.statusCode, 503);
+    assert.deepEqual(billingChild.body, { ...SERVICE_UNAVAILABLE_BODY });
+  });
+
   it("exempt admin and webhook paths remain reachable when the flag read fails", async () => {
     const admin = await drive(
       failClosed,
@@ -303,6 +391,15 @@ describe("maintenance middleware decisions", () => {
     assert.equal(telegram.outcome, "next");
     assert.equal(whatsapp.outcome, "next");
     assert.equal(billing.outcome, "next");
+  });
+
+  it("'/apiculture' is not treated as part of the /api surface", async () => {
+    // Using the failing reader proves the middleware never performs a
+    // flag read for this path — it is outside the gated API surface,
+    // so it passes through even while the flag store is unreadable.
+    const result = await drive(failClosed, makeReq("GET", "/apiculture"));
+
+    assert.equal(result.outcome, "next");
   });
 });
 
