@@ -104,7 +104,7 @@ model User {
 model PasswordReset {
   id        Int      @id @default(autoincrement())
   userId    Int
-  tokenHash String   @unique
+  token     String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
 
@@ -112,7 +112,7 @@ model PasswordReset {
 }
 
 model RefreshSession {
-  id        Int      @id @default(autoincrement())
+  id        Int       @id @default(autoincrement())
   userId    Int
   tokenHash String    @unique
   expiresAt DateTime
@@ -837,10 +837,10 @@ model FAQItem {
 // Editable static pages surfaced through the admin
 // Content screen (about, terms, privacy, etc.).
 model ContentPage {
-  id    Int     @id @default(autoincrement())
-  slug  String  @unique
+  id    Int    @id @default(autoincrement())
+  slug  String @unique
   title String
-  body  String  @db.Text
+  body  String @db.Text
 
   status ContentStatus @default(DRAFT)
 
