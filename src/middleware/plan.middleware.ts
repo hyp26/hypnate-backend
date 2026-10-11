@@ -16,10 +16,28 @@ const PLAN_NAMES: Record<PlanId, string> = {
 };
 
 /**
- * Load the seller-scoped billing fields used by the authoritative
+ * The seller billing fields consumed by the authoritative
  * entitlement decision (getPlanAccess in billing.service).
+ * Declared structurally so tests can supply a plain object
+ * without Prisma's client-thenable return type.
  */
-const defaultLoadSeller = (sellerId: number) =>
+export interface SellerPlanAccessRow {
+  activePlan: string | null;
+  planStatus: string | null;
+  planCurrentPeriodEnd: Date | null;
+  planActivatedAt: Date | null;
+  trialPlan: string | null;
+  trialEndsAt: Date | null;
+}
+
+/**
+ * Loads the seller-scoped billing row used for the entitlement
+ * decision. prisma.seller.findUnique satisfies this type because
+ * PrismaPromise<T> extends Promise<T>.
+ */
+export type LoadSeller = (sellerId: number) => Promise<SellerPlanAccessRow | null>;
+
+const defaultLoadSeller: LoadSeller = (sellerId) =>
   prisma.seller.findUnique({
     where: { id: sellerId },
     select: {
@@ -31,8 +49,6 @@ const defaultLoadSeller = (sellerId: number) =>
       trialEndsAt: true,
     },
   });
-
-type LoadSeller = typeof defaultLoadSeller;
 
 /**
  * Optional dependency overrides, used by unit tests to stub the
