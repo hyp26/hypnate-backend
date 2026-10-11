@@ -5,8 +5,12 @@
  *
  *   npm run seed:admin
  *
- * Credentials come from ADMIN_EMAIL / ADMIN_PASSWORD env
- * vars. Defaults exist only for local development.
+ * Credentials MUST be provided through the ADMIN_EMAIL /
+ * ADMIN_PASSWORD environment variables. There are no
+ * defaults: the seed fails hard if either is missing, so a
+ * known credential can never be provisioned implicitly.
+ *
+ * The password is never logged or printed.
  */
 import "dotenv/config";
 import bcrypt from "bcrypt";
@@ -14,15 +18,24 @@ import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
-const DEFAULT_SUPER_ADMIN_EMAIL = "hamim.quazi@hypnate.in";
-const DEFAULT_SUPER_ADMIN_PASSWORD = "CanVade@2025";
-
 const run = async (): Promise<void> => {
-  const email = (process.env.ADMIN_EMAIL ?? DEFAULT_SUPER_ADMIN_EMAIL)
+  const email = (process.env.ADMIN_EMAIL ?? "")
     .trim()
     .toLowerCase();
 
-  const password = process.env.ADMIN_PASSWORD ?? DEFAULT_SUPER_ADMIN_PASSWORD;
+  const password = process.env.ADMIN_PASSWORD ?? "";
+
+  if (!email) {
+    throw new Error(
+      "ADMIN_EMAIL is required. Set a real admin email in the environment before running the admin seed."
+    );
+  }
+
+  if (!password) {
+    throw new Error(
+      "ADMIN_PASSWORD is required. Set a strong password in the environment before running the admin seed."
+    );
+  }
 
   if (password.length < 8) {
     throw new Error(
