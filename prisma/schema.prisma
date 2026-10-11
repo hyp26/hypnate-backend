@@ -333,6 +333,22 @@ model QuickReply {
 // WEBHOOK
 // ─────────────────────────────────────────────
 
+// Durable idempotency ledger for Telegram webhook deliveries.
+// One row per (seller, Telegram update_id); status tracks processing state.
+model TelegramWebhookUpdate {
+  id Int @id @default(autoincrement())
+
+  sellerId Int
+  updateId Int
+
+  status String @default("PROCESSING")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sellerId, updateId])
+  @@index([status, createdAt])
+}
 model WebhookEvent {
   id Int @id @default(autoincrement())
 
