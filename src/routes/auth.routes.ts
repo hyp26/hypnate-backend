@@ -20,7 +20,6 @@ const router = Router();
 /* ---------------------------
    PUBLIC
 ---------------------------- */
-
 /*
  * P1-004: the registration gate runs BEFORE the register controller,
  * so when the newUserRegistration feature flag is disabled the request

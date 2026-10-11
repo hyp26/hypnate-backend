@@ -581,8 +581,10 @@ io.on("connection", (socket) => {
 
         socket.join(`room_${conversation.id}`);
       } catch (err) {
-        logger.error("Socket conversation authorization error:",
-          err);
+        logger.error(
+          "Socket conversation authorization error:",
+          err
+        );
       }
     }
   
