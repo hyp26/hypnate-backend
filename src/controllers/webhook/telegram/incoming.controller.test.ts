@@ -621,6 +621,27 @@ test("a partial or unrelated string target is NOT the race", () => {
   assert.equal(isConversationCreateRace(p2002("Conversation_sellerId_key")), false);
 });
 
+test("a string-form target with the four fields in the wrong order is NOT the race", () => {
+  // The constraint name is positional: the same four fields reordered
+  // name a different (nonexistent) constraint, so it must be rejected.
+  assert.equal(
+    isConversationCreateRace(
+      p2002(
+        "Conversation_externalThreadId_externalUserId_platform_sellerId_key"
+      )
+    ),
+    false
+  );
+  assert.equal(
+    isConversationCreateRace(
+      p2002(
+        "Conversation_sellerId_externalUserId_platform_externalThreadId_key"
+      )
+    ),
+    false
+  );
+});
+
 test("a P2002 without a usable target is NOT classified as the conversation race", () => {
   assert.equal(isConversationCreateRace(p2002(undefined)), false);
   assert.equal(isConversationCreateRace(p2002(null)), false);

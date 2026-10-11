@@ -445,12 +445,12 @@ export const CONVERSATION_CREATE_RETRY_ATTEMPTS = 3;
  * "Conversation_sellerId_platform_externalUserId_externalThreadId_key")
  * or an array of the violating field names. The array form must
  * contain EXACTLY the four compound-key fields (order-insensitive);
- * the string form must be exactly the Conversation compound constraint
- * identity. Any other target (Message, TelegramWebhookUpdate, ...),
- * any partial or superset target, any non-P2002 error, or a P2002
- * without a usable target does NOT qualify and remains an unexpected
- * error handled retryably by handleProcessingFailure — never
- * acknowledged. Exported for tests.
+ * the string form must be exactly the generated Conversation compound
+ * constraint name. Any other target (Message, TelegramWebhookUpdate,
+ * ...), any partial or superset target, any non-P2002 error, or a
+ * P2002 without a usable target does NOT qualify and remains an
+ * unexpected error handled retryably by handleProcessingFailure —
+ * never acknowledged. Exported for tests.
  */
 export const CONVERSATION_COMPOUND_FIELDS: ReadonlyArray<string> = [
   "sellerId",
@@ -458,6 +458,17 @@ export const CONVERSATION_COMPOUND_FIELDS: ReadonlyArray<string> = [
   "externalUserId",
   "externalThreadId",
 ];
+
+/*
+ * The exact default name Prisma generates for the Conversation
+ * compound unique constraint. Unlike the field-array form, the
+ * constraint name is positional, so the string form of the
+ * classification requires this EXACT identity — the same four fields
+ * in any other order name a different (nonexistent) constraint and
+ * must not be classified as the retryable race.
+ */
+export const CONVERSATION_COMPOUND_CONSTRAINT_NAME =
+  "Conversation_sellerId_platform_externalUserId_externalThreadId_key";
 
 export function isConversationCreateRace(
   err: unknown
@@ -487,16 +498,7 @@ export function isConversationCreateRace(
     return false;
   }
 
-  const tokens = target.split("_");
-
-  return (
-    tokens.length === 6 &&
-    tokens[0] === "Conversation" &&
-    tokens[5] === "key" &&
-    CONVERSATION_COMPOUND_FIELDS.every((field) =>
-      tokens.includes(field)
-    )
-  );
+  return target === CONVERSATION_COMPOUND_CONSTRAINT_NAME;
 }
 
 function isBotMessage(
