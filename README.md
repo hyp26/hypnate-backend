@@ -45,3 +45,9 @@ npx prisma migrate dev
 # Open Prisma Studio (DB GUI)
 npx prisma studio
 
+
+## License
+
+This backend is **proprietary software**. Copyright (c) 2026 Hypnate Solutions Private Limited. All rights reserved.
+
+See the [LICENSE](LICENSE) file. No permission is granted to use, copy, modify, publish, distribute, sublicense, or sell this software without prior written permission from the copyright owner, except as expressly permitted by a separate written agreement. Third-party software included in or used by this project remains subject to its respective license terms.
