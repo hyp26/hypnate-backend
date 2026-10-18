@@ -29,6 +29,11 @@ import {
   diagnoseOAuthTokenIdentity,
   diagnoseOAuthTokenScopes,
 } from "../services/messaging/whatsapp.service";
+import {
+  deactivateOwnershipForConnection,
+  hasOtherActiveWabaConnection,
+  syncConnectionOwnership,
+} from "../services/whatsappOwnership.service";
 
 /* ----------------------------------------------------
    CONSTANTS
@@ -649,7 +654,7 @@ export const whatsappCallback = async (
         : "webhook_subscription_failed",
     };
 
-    await prisma.channelConnection.upsert({
+    const connection = await prisma.channelConnection.upsert({
       where: {
         sellerId_platform: {
           sellerId,
@@ -679,6 +684,34 @@ export const whatsappCallback = async (
         isActive: true,
       },
     });
+
+    /*
+     * 6b. Keep the normalized phone-number ownership mapping in
+     *     sync with the metadata this connection now claims. Any
+     *     previously active ownership row for a claimed phone
+     *     number is deactivated, so this connection becomes the
+     *     single authoritative owner for inbound routing. The
+     *     partial unique index aborts the transaction rather
+     *     than allowing duplicates.
+     */
+    try {
+      await prisma.$transaction(async (tx) => {
+        await syncConnectionOwnership(
+          tx,
+          {
+            id: connection.id,
+            sellerId,
+            metadata: connectionMetadata,
+          },
+          wabaId
+        );
+      });
+    } catch (err) {
+      logger.error(
+        "WhatsApp phone-number ownership sync failed",
+        err
+      );
+    }
 
     /*
      * 7. Send the browser back to the Hypnate frontend with a
@@ -826,6 +859,7 @@ export const validateWhatsAppConnection = async (
           platform: "WHATSAPP",
         },
         select: {
+          id: true,
           accessToken: true,
           metadata: true,
         },
@@ -1000,37 +1034,73 @@ export const disconnectWhatsApp = async (
      * fails (for example an expired token), the local connection
      * is still disabled below.
      */
-    if (connection.accessToken && metadata.whatsappBusinessId) {
-      try {
-        const accessToken = decrypt(
-          connection.accessToken
-        );
+    if (
+      connection.accessToken &&
+      metadata.whatsappBusinessId
+    ) {
+      /*
+       * Shared-WABA guard: the WABA webhook subscription is
+       * app-level in Meta's API. If another ACTIVE connection
+       * (for example another seller's, or the destination of a
+       * pending ownership transfer) still depends on this WABA,
+       * do NOT unsubscribe — that would break inbound delivery
+       * for a connection that is not being disconnected.
+       */
+      const wabaStillNeeded = await hasOtherActiveWabaConnection(
+        prisma,
+        metadata.whatsappBusinessId,
+        connection.id
+      );
 
-        await unsubscribeWabaWebhooks(
-          accessToken,
-          metadata.whatsappBusinessId
+      if (wabaStillNeeded) {
+        logger.info(
+          "Skipping WhatsApp WABA unsubscribe: another active connection still depends on this WABA",
+          { wabaId: metadata.whatsappBusinessId }
         );
-      } catch (err) {
-        logger.error(
-          "WhatsApp webhook unsubscription failed",
-          err
-        );
+      } else {
+        try {
+          const accessToken = decrypt(
+            connection.accessToken
+          );
+
+          await unsubscribeWabaWebhooks(
+            accessToken,
+            metadata.whatsappBusinessId
+          );
+        } catch (err) {
+          logger.error(
+            "WhatsApp webhook unsubscription failed",
+            err
+          );
+        }
       }
     }
 
-    await prisma.channelConnection.updateMany({
-      where: {
-        sellerId,
-        platform: "WHATSAPP",
-      },
-      data: {
-        isActive: false,
-        metadata: {
-          ...metadata,
-          connectionStatus: "DISCONNECTED",
-          lastError: null,
+    await prisma.$transaction(async (tx) => {
+      await tx.channelConnection.updateMany({
+        where: {
+          sellerId,
+          platform: "WHATSAPP",
         },
-      },
+        data: {
+          isActive: false,
+          metadata: {
+            ...metadata,
+            connectionStatus: "DISCONNECTED",
+            lastError: null,
+          },
+        },
+      });
+
+      /*
+       * Deactivate this seller's phone-number ownership rows so
+       * inbound routing stops resolving to the disconnected
+       * connection. Rows are kept (never deleted) for audit.
+       */
+      await deactivateOwnershipForConnection(
+        tx,
+        connection.id
+      );
     });
 
     return res.json({
