@@ -1012,6 +1012,7 @@ export const disconnectWhatsApp = async (
           platform: "WHATSAPP",
         },
         select: {
+          id: true,
           accessToken: true,
           metadata: true,
         },

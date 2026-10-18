@@ -22,8 +22,9 @@ CREATE TABLE "WhatsAppPhoneOwnership" (
 -- Create a FK to the table: "ChannelConnection"
 ALTER TABLE "WhatsAppPhoneOwnership"
     ADD CONSTRAINT "WhatsAppPhoneOwnership_connectionId_fkey"
-    FOREIGN KEY ("connectionId") REFERENCES "ChannelConnection"("id")
-    ON DELETE CASCADE ON UPDATE CASCADE;
+    FOREIGN KEY ("connectionId")
+    REFERENCES "ChannelConnection"("id")
+    ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- Create a FK to the table: "Seller"
 ALTER TABLE "WhatsAppPhoneOwnership"
@@ -71,14 +72,12 @@ BEGIN
                 END IF;
 
                 IF phone_id IS NOT NULL AND phone_id <> '' THEN
-                    owner := NULL;
                     SELECT * INTO owner
                     FROM "WhatsAppPhoneOwnership"
                     WHERE "phoneNumberId" = phone_id AND "isActive" = true
                     LIMIT 1;
-
-                    IF owner IS NULL THEN
-                        INSERT INTO "WhatsAppPhoneOwnership"
+                    IF NOT FOUND THEN
+                                            INSERT INTO "WhatsAppPhoneOwnership"
                             ("phoneNumberId", "connectionId", "sellerId", "wabaId", "isActive", "updatedAt")
                         VALUES (phone_id, conn."id", conn."sellerId", conn."externalAccountId", true, now());
                         RAISE NOTICE 'ownership: phone % -> connection % (seller %)', phone_id, conn."id", conn."sellerId";
@@ -102,13 +101,11 @@ BEGIN
                 );
 
                 IF phone_id IS NOT NULL THEN
-                    owner := NULL;
                     SELECT * INTO owner
                     FROM "WhatsAppPhoneOwnership"
                     WHERE "phoneNumberId" = phone_id AND "isActive" = true
                     LIMIT 1;
-
-                    IF owner IS NULL THEN
+                    IF NOT FOUND THEN
                         INSERT INTO "WhatsAppPhoneOwnership"
                             ("phoneNumberId", "connectionId", "sellerId", "wabaId", "isActive", "updatedAt")
                         VALUES (phone_id, conn."id", conn."sellerId", conn."externalAccountId", true, now());
