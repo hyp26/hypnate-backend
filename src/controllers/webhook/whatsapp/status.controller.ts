@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../../../prisma/client";
 import { Prisma, MessageStatus } from "@prisma/client";
 import { logger } from "../../../utils/logger";
+import { acquirePhoneNumberLock } from "../../../services/whatsappOwnership.service";
 
 /*
  * Meta reports outbound message statuses as:
@@ -167,16 +168,44 @@ const processStatus = async (
   const baseMetadata = (message.metadata ??
     {}) as Prisma.JsonObject;
 
-  const updated = await prisma.message.update({
-    where: { id: message.id },
-    data: {
-      status: mappedStatus,
-      metadata: {
-        ...baseMetadata,
-        ...safeMetadata,
-      },
-    },
-  });
+  /*
+   * Serialize the status write with ownership changes using the
+   * same per-phone-number advisory lock the inbound-message path
+   * and the ownership-transfer operation acquire. The lock is held
+   * until commit, so a concurrent transfer cannot move this
+   * conversation between ownership resolution and the durable
+   * status update. Falls back to the conversation's thread id
+   * when Meta omits the phone-number id.
+   */
+  const lockKey =
+    phoneNumberId ||
+    (conversation.externalThreadId ?? "");
+
+  const updated = lockKey
+    ? await prisma.$transaction(async (tx) => {
+        await acquirePhoneNumberLock(tx, lockKey);
+
+        return tx.message.update({
+          where: { id: message.id },
+          data: {
+            status: mappedStatus,
+            metadata: {
+              ...baseMetadata,
+              ...safeMetadata,
+            },
+          },
+        });
+      })
+    : await prisma.message.update({
+        where: { id: message.id },
+        data: {
+          status: mappedStatus,
+          metadata: {
+            ...baseMetadata,
+            ...safeMetadata,
+          },
+        },
+      });
 
   return {
     message: {
