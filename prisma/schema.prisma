@@ -220,23 +220,21 @@ model ChannelConnection {
 // WHATSAPP PHONE-NUMBER OWNERSHIP
 // ─────────────────────────────────────────────
 
-/*
- * Normalized, authoritative mapping of every supported WhatsApp
- * phone-number ID to the single ChannelConnection that owns it.
- *
- * Replaces JSON-metadata scanning for inbound routing: inbound
- * message and status webhooks resolve the owning seller exclusively
- * through ACTIVE rows here and fail closed (no arbitrary first
- * match) when a phone number is unknown or ambiguous.
- *
- * DATABASE INVARIANT — enforced by the partial unique index
- * created in migration 20261018120000_add_whatsapp_phone_ownership:
- *
- *   at most one ACTIVE row per phoneNumberId.
- *
- * Rows are never deleted: a transfer or disconnect flips isActive
- * to false, preserving full audit history.
- */
+// Normalized, authoritative mapping of every supported WhatsApp
+// phone-number ID to the single ChannelConnection that owns it.
+//
+// Replaces JSON-metadata scanning for inbound routing: inbound
+// message and status webhooks resolve the owning seller exclusively
+// through ACTIVE rows here and fail closed (no arbitrary first
+// match) when a phone number is unknown or ambiguous.
+//
+// DATABASE INVARIANT — enforced by the partial unique index
+// created in migration 20261018120000_add_whatsapp_phone_ownership:
+//
+//   at most one ACTIVE row per phoneNumberId.
+//
+// Rows are never deleted: a transfer or disconnect flips isActive
+// to false, preserving full audit history.
 model WhatsAppPhoneOwnership {
   id Int @id @default(autoincrement())
 
@@ -261,20 +259,18 @@ model WhatsAppPhoneOwnership {
   @@index([connectionId])
 }
 
-/*
- * Robust journal for WhatsApp connection-ownership transfers.
- *
- * The generic AuditLog model cannot represent the full
- * before/after state a transfer rollback needs, so transfers
- * use this dedicated journal. It stores NO access tokens,
- * secrets, or message contents — only identifiers, counts,
- * connection states and per-conversation before/after
- * ownership snapshots.
- *
- * A row is written per operation attempt:
- *   - DRY_RUN_REPORTED for read-only dry runs
- *   - COMPLETED / FAILED / ABORTED for apply attempts
- */
+// Robust journal for WhatsApp connection-ownership transfers.
+//
+// The generic AuditLog model cannot represent the full
+// before/after state a transfer rollback needs, so transfers
+// use this dedicated journal. It stores NO access tokens,
+// secrets, or message contents — only identifiers, counts,
+// connection states and per-conversation before/after
+// ownership snapshots.
+//
+// A row is written per operation attempt:
+//   - DRY_RUN_REPORTED for read-only dry runs
+//   - COMPLETED / FAILED / ABORTED for apply attempts
 model WhatsAppTransferJournal {
   id String @id @default(uuid())
 
