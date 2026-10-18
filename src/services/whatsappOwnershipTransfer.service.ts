@@ -857,14 +857,19 @@ export const applyTransfer = async (input: {
        * unsubscribeWabaWebhooks here — the WABA subscription is
        * app-level and still needed by the destination.
        */
+      const sourceConnectionCurrent =
+        await tx.channelConnection.findUnique({
+          where: { id: report.sourceConnection.id },
+          select: { metadata: true },
+        });
+
       await tx.channelConnection.update({
         where: { id: report.sourceConnection.id },
         data: {
           isActive: false,
           metadata: {
-            ...(report.sourceConnection
-              ? {}
-              : {}),
+            ...((sourceConnectionCurrent?.metadata ??
+              {}) as Prisma.InputJsonObject),
             connectionStatus: "TRANSFERRED",
             transferredToSellerId: destinationSellerId,
             transferredAt: new Date().toISOString(),
