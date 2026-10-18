@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   evictSocketsFromConversations,
+  parseJournalPhoneIds,
+  recoverJournalCounts,
   TransferAbortError,
 } from "./whatsappOwnershipTransfer.service";
 
@@ -61,6 +63,132 @@ const makeIo = (sockets: any[]) => ({
     fetchSockets: async () =>
       sockets.map((socket) => ({ ...socket })),
   }),
+});
+
+/* ----------------------------------------------------
+   parseJournalPhoneIds — trusted-payload validation
+---------------------------------------------------- */
+
+describe("parseJournalPhoneIds", () => {
+  it("accepts a valid array of phone ids, trimmed, deduped, sorted", () => {
+    assert.deepEqual(
+      parseJournalPhoneIds(["222", "111", " 111 ", "333"]),
+      ["111", "222", "333"]
+    );
+  });
+
+  it("rejects a non-array value", () => {
+    assert.equal(parseJournalPhoneIds("111"), null);
+    assert.equal(parseJournalPhoneIds({ id: "111" }), null);
+    assert.equal(parseJournalPhoneIds(null), null);
+  });
+
+  it("rejects arrays containing non-strings", () => {
+    assert.equal(parseJournalPhoneIds(["111", 222]), null);
+    assert.equal(
+      parseJournalPhoneIds(["111", null]),
+      null
+    );
+    assert.equal(
+      parseJournalPhoneIds([{ id: "111" }]),
+      null
+    );
+  });
+
+  it("rejects empty or whitespace-only entries", () => {
+    assert.equal(parseJournalPhoneIds(["111", ""]), null);
+    assert.equal(parseJournalPhoneIds(["111", "   "]), null);
+  });
+
+  it("accepts an empty array (nothing transferred claim)", () => {
+    assert.deepEqual(parseJournalPhoneIds([]), []);
+  });
+});
+
+/* ----------------------------------------------------
+   recoverJournalCounts — never invent counts
+---------------------------------------------------- */
+
+describe("recoverJournalCounts", () => {
+  it("recovers counts from the structured integer columns", () => {
+    const counts = recoverJournalCounts({
+      conversationCount: 3,
+      messageCount: 42,
+      report: null,
+    });
+
+    assert.deepEqual(counts, {
+      conversationCount: 3,
+      messageCount: 42,
+    });
+  });
+
+  it("falls back to the persisted transfer report", () => {
+    const counts = recoverJournalCounts({
+      conversationCount: null,
+      messageCount: null,
+      report: {
+        conversationCount: 2,
+        messageCount: 17,
+      },
+    });
+
+    assert.deepEqual(counts, {
+      conversationCount: 2,
+      messageCount: 17,
+    });
+  });
+
+  it("returns null when both sources are null", () => {
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: null,
+        messageCount: null,
+        report: null,
+      }),
+      null
+    );
+  });
+
+  it("returns null for negative, fractional or non-integer counts", () => {
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: 1,
+        messageCount: -5,
+        report: null,
+      }),
+      null
+    );
+
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: 1,
+        messageCount: 1.5,
+        report: null,
+      }),
+      null
+    );
+
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: 1,
+        messageCount: "42",
+        report: null,
+      }),
+      null
+    );
+  });
+
+  it("returns null when a structured count is valid but its pair is not", () => {
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: 3,
+        messageCount: null,
+        report: null,
+      }),
+      null
+    );
+  });
 });
 
 describe("evictSocketsFromConversations", () => {
