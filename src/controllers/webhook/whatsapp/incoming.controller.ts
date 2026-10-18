@@ -6,57 +6,11 @@ import {
   processWhatsAppStatuses,
   StatusUpdateResult,
 } from "./status.controller";
-
-type WhatsAppMetadata = {
-  phoneNumberIds?: unknown;
-  phoneNumbers?: unknown;
-};
-
-const findSellerConnection = async (phoneNumberId: string) => {
-  const connections = await prisma.channelConnection.findMany({
-    where: {
-      platform: "WHATSAPP",
-      isActive: true,
-    },
-    select: {
-      id: true,
-      sellerId: true,
-      metadata: true,
-    },
-  });
-
-  return connections.find((connection) => {
-    const metadata = (connection.metadata ?? {}) as WhatsAppMetadata;
-
-    if (Array.isArray(metadata.phoneNumberIds)) {
-      if (
-        metadata.phoneNumberIds.some(
-          (id) => String(id) === phoneNumberId
-        )
-      ) {
-        return true;
-      }
-    }
-
-    if (Array.isArray(metadata.phoneNumbers)) {
-      return metadata.phoneNumbers.some((phone) => {
-        if (!phone || typeof phone !== "object") {
-          return false;
-        }
-
-        const value = phone as Record<string, unknown>;
-
-        return (
-          String(
-            value.id ?? value.phone_number_id ?? ""
-          ) === phoneNumberId
-        );
-      });
-    }
-
-    return false;
-  });
-};
+import {
+  acquirePhoneNumberLock,
+  PhoneOwnershipError,
+  resolveActiveOwner,
+} from "../../../services/whatsappOwnership.service";
 
 const getCustomerName = (
   contacts: unknown,
@@ -124,16 +78,6 @@ const processMessage = async (
     return null;
   }
 
-  const connection = await findSellerConnection(
-    phoneNumberId
-  );
-
-  if (!connection) {
-    // Do not reveal or log channel/account details.
-    return null;
-  }
-
-  const sellerId = connection.sellerId;
   const customerName = getCustomerName(
     value.contacts,
     customerPhone
@@ -176,9 +120,35 @@ const processMessage = async (
     );
   }
 
+  // Seller resolved inside the transaction below; kept for the
+  // P2002 idempotency recovery path.
+  let resolvedSellerId: number | null = null;
+
   try {
     const result = await prisma.$transaction(
       async (tx) => {
+        /*
+         * Serialize with ownership changes: the advisory lock is
+         * held until commit, covering ownership resolution through
+         * the durable persistence of this message. A concurrent
+         * ownership transfer waits, or this webhook waits for it.
+         */
+        await acquirePhoneNumberLock(tx, phoneNumberId);
+
+        /*
+         * Authoritative, fail-closed ownership resolution. Never
+         * scans connection metadata for a first match: unknown or
+         * ambiguous phone numbers throw instead of routing the
+         * message to an arbitrary seller.
+         */
+        const owner = await resolveActiveOwner(
+          tx,
+          phoneNumberId
+        );
+
+        const sellerId = owner.sellerId;
+        resolvedSellerId = sellerId;
+
         let customer = await tx.customer.findFirst({
           where: {
             sellerId,
@@ -290,17 +260,30 @@ const processMessage = async (
 
     return result;
   } catch (error) {
-    // If a unique constraint is added for webhook idempotency,
-    // concurrent delivery of the same Meta message can safely
-    // be treated as already processed.
+    // Fail closed: an unknown/ambiguous phone number or an inactive
+    // owning connection must NOT be treated as "processed". Re-throw
+    // so receiveMessage returns 500 and Meta retries the webhook.
+    if (error instanceof PhoneOwnershipError) {
+      logger.warn(
+        "WhatsApp inbound routing failed closed:",
+        error.code
+      );
+
+      throw error;
+    }
+
+    // Concurrent delivery of the same Meta message can safely be
+    // treated as already processed when the idempotency unique
+    // constraint (conversationId, externalMessageId) fired.
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2002"
+      error.code === "P2002" &&
+      resolvedSellerId !== null
     ) {
       const conversation =
         await prisma.conversation.findFirst({
           where: {
-            sellerId,
+            sellerId: resolvedSellerId,
             platform: "WHATSAPP",
             externalUserId: customerPhone,
             externalThreadId: phoneNumberId,
