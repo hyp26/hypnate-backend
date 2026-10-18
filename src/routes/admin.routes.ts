@@ -64,6 +64,10 @@ import {
 } from "../controllers/admin/adminContent.controller";
 import { listAuditLogs } from "../controllers/admin/adminAudit.controller";
 import {
+  whatsappTransferDryRun,
+  whatsappTransferApply,
+} from "../controllers/admin/adminWhatsappTransfer.controller";
+import {
   getSettings,
   updateSettings,
   getFeatureFlags,
@@ -261,6 +265,33 @@ router.get("/settings", ...guard, adminOnly, adminHandler(getSettings));
 router.put("/settings", ...guard, adminOnly, adminHandler(updateSettings));
 router.get("/feature-flags", ...guard, adminOnly, adminHandler(getFeatureFlags));
 router.put("/feature-flags", ...guard, adminOnly, adminHandler(updateFeatureFlags));
+
+/* ----------------------------------------------------
+   WHATSAPP OWNERSHIP TRANSFER
+---------------------------------------------------- */
+
+/*
+ * Read-only dry run of a WhatsApp connection-ownership
+ * transfer between two sellers.
+ */
+router.post(
+  "/whatsapp-transfer/dry-run",
+  ...guard,
+  adminOnly,
+  adminHandler(whatsappTransferDryRun)
+);
+
+/*
+ * Apply a transfer. Requires an explicit confirm flag in the
+ * request body AND a SUPER_ADMIN role: this operation moves
+ * live conversation history and connection ownership.
+ */
+router.post(
+  "/whatsapp-transfer/apply",
+  ...guard,
+  requireAdminRoles("SUPER_ADMIN") as RequestHandler,
+  adminHandler(whatsappTransferApply)
+);
 
 /* ----------------------------------------------------
    STATS + ANALYTICS
