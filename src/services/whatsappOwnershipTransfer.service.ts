@@ -48,7 +48,10 @@ export type TransferAbortCode =
   | "OWNERSHIP_MAPPING_INVALID"
   | "DESTINATION_CONVERSATION_CONFLICT"
   | "SOURCE_USER_ASSIGNMENT"
-  | "ALREADY_COMPLETED";
+  | "ALREADY_COMPLETED"
+  | "DESTINATION_CONNECTION_INACTIVE"
+  | "JOURNAL_STATE_INVALID"
+  | "CONCURRENT_TRANSFER_CONFLICT";
 
 export class TransferAbortError extends Error {
   constructor(
@@ -149,6 +152,109 @@ const readWabaId = (
     .whatsappBusinessId;
 
   return typeof value === "string" ? value : null;
+};
+
+/*
+ * Runtime validation of a persisted journal payload.
+ *
+ * Prisma types JSON columns as JsonValue; nothing about a stored
+ * journal row is trusted until it is parsed. Accept ONLY an
+ * array of non-empty strings (trimmed, deduplicated, sorted).
+ * Anything else is malformed and must never yield
+ * ALREADY_COMPLETED.
+ */
+export const parseJournalPhoneIds = (
+  value: Prisma.JsonValue
+): string[] | null => {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const ids: string[] = [];
+
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      return null;
+    }
+
+    const id = entry.trim();
+
+    if (!id) {
+      return null;
+    }
+
+    if (!ids.includes(id)) {
+      ids.push(id);
+    }
+  }
+
+  return ids.sort();
+};
+
+const normalizePhoneIdSet = (ids: string[]): Set<string> => {
+  const set = new Set<string>();
+
+  for (const id of ids) {
+    const trimmed = id.trim();
+
+    if (trimmed) {
+      set.add(trimmed);
+    }
+  }
+
+  return set;
+};
+
+const isNonNegativeInteger = (
+  value: unknown
+): value is number =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= 0;
+
+/*
+ * Recover conversation/message counts for an already-completed
+ * transfer from its persisted journal row. Trust the structured
+ * integer columns first, then the persisted transfer report.
+ * If neither holds a trustworthy non-negative integer pair,
+ * return null — the caller must abort and require manual
+ * review. Counts are NEVER invented or defaulted to zero.
+ */
+export const recoverJournalCounts = (journal: {
+  report: Prisma.JsonValue;
+  conversationCount: number | null;
+  messageCount: number | null;
+}): {
+  conversationCount: number;
+  messageCount: number;
+} | null => {
+  if (
+    isNonNegativeInteger(journal.messageCount) &&
+    isNonNegativeInteger(journal.conversationCount)
+  ) {
+    return {
+      conversationCount: journal.conversationCount,
+      messageCount: journal.messageCount,
+    };
+  }
+
+  const report = journal.report;
+
+  if (report && typeof report === "object" && !Array.isArray(report)) {
+    const record = report as Record<string, unknown>;
+
+    if (
+      isNonNegativeInteger(record.messageCount) &&
+      isNonNegativeInteger(record.conversationCount)
+    ) {
+      return {
+        conversationCount: record.conversationCount,
+        messageCount: record.messageCount,
+      };
+    }
+  }
+
+  return null;
 };
 
 /*
@@ -628,22 +734,48 @@ export const applyTransfer = async (input: {
     destinationSellerId
   );
 
-  if (
-    completed &&
-    preReport.phoneNumberIds.every((id) =>
-      ((completed.phoneNumberIds as unknown) as string[]).includes(
-        id
-      )
-    )
-  ) {
-    return {
-      status: "ALREADY_COMPLETED",
-      journalId: completed.id,
-      report: preReport,
-      conversationCount: 0,
-      messageCount: 0,
-      evictedSockets: 0,
-    };
+  if (completed) {
+    /*
+     * The journal payload is untrusted JSON: parse and validate
+     * it before trusting ALREADY_COMPLETED. Only a valid array
+     * of non-empty strings that COVERS the current claim may
+     * short-circuit. A malformed or stale journal entry falls
+     * through to a full apply attempt — the in-transaction
+     * checks remain authoritative either way.
+     */
+    const journalPhoneIds = parseJournalPhoneIds(
+      completed.phoneNumberIds
+    );
+
+    if (journalPhoneIds) {
+      const transferred = new Set(journalPhoneIds);
+      const claimed = normalizePhoneIdSet(preReport.phoneNumberIds);
+
+      const coversClaim = [...claimed].every((id) =>
+        transferred.has(id)
+      );
+
+      if (coversClaim) {
+        const counts = recoverJournalCounts(completed);
+
+        if (!counts) {
+          throw new TransferAbortError(
+            "JOURNAL_STATE_INVALID",
+            "Completed transfer journal has no trustworthy message count; manual review required",
+            { journalId: completed.id }
+          );
+        }
+
+        return {
+          status: "ALREADY_COMPLETED",
+          journalId: completed.id,
+          report: preReport,
+          conversationCount: counts.conversationCount,
+          messageCount: counts.messageCount,
+          evictedSockets: 0,
+        };
+      }
+    }
   }
 
   // ---- Static preconditions (fail before any writes) ----
@@ -683,6 +815,13 @@ export const applyTransfer = async (input: {
     );
   }
 
+  if (!preReport.destinationConnection.isActive) {
+    throw new TransferAbortError(
+      "DESTINATION_CONNECTION_INACTIVE",
+      "Destination seller WhatsApp connection is not active; connect WhatsApp before transferring"
+    );
+  }
+
   if (
     preReport.ownership.some(
       (entry) =>
@@ -712,7 +851,14 @@ export const applyTransfer = async (input: {
    */
   const sortedPhoneIds = [...preReport.phoneNumberIds].sort();
 
-  const result = await prisma.$transaction(
+  let result: {
+    journalId: string;
+    report: TransferReport;
+    conversationIds: number[];
+  };
+
+  try {
+    result = await prisma.$transaction(
     async (tx) => {
       for (const phoneNumberId of sortedPhoneIds) {
         await acquirePhoneNumberLock(tx, phoneNumberId);
@@ -723,6 +869,77 @@ export const applyTransfer = async (input: {
         sourceSellerId,
         destinationSellerId
       );
+
+      /*
+       * Validate the SOURCE connection inside the transaction,
+       * before any business-data writes. Its id must match the
+       * connection that was reviewed — a different or missing
+       * connection means the world changed under us: abort.
+       */
+      const sourceConnection = report.sourceConnection;
+
+      if (!sourceConnection) {
+        throw new TransferAbortError(
+          "SOURCE_CONNECTION_MISSING",
+          "Source seller WhatsApp connection disappeared; aborting"
+        );
+      }
+
+      if (!sourceConnection.isActive) {
+        throw new TransferAbortError(
+          "SOURCE_CONNECTION_INACTIVE",
+          "Source seller WhatsApp connection is no longer active; aborting"
+        );
+      }
+
+      const reviewedSourceConnectionId =
+        preReport.sourceConnection?.id;
+
+      if (
+        reviewedSourceConnectionId === undefined ||
+        sourceConnection.id !== reviewedSourceConnectionId
+      ) {
+        throw new TransferAbortError(
+          "SOURCE_CONNECTION_MISSING",
+          "Source WhatsApp connection changed between review and apply; re-run the dry run"
+        );
+      }
+
+      const sourceConnectionId = sourceConnection.id;
+
+      /*
+       * Exact-ownership verification: every transferred phone
+       * number must be actively owned by EXACTLY the source
+       * connection AND the source seller right now. An absent,
+       * ambiguous or foreign-owned mapping aborts the transfer.
+       */
+      for (const phoneNumberId of sortedPhoneIds) {
+        const activeRows =
+          await tx.whatsAppPhoneOwnership.findMany({
+            where: {
+              phoneNumberId,
+              isActive: true,
+            },
+            select: { connectionId: true, sellerId: true },
+          });
+
+        if (
+          activeRows.length !== 1 ||
+          activeRows[0].connectionId !== sourceConnectionId ||
+          activeRows[0].sellerId !== sourceSellerId
+        ) {
+          throw new TransferAbortError(
+            "OWNERSHIP_MAPPING_INVALID",
+            "A transferred phone number is not actively owned by the source connection; aborting",
+            {
+              phoneNumberId,
+              activeOwnerConnectionId: activeRows[0]?.connectionId ?? null,
+              activeOwnerSellerId: activeRows[0]?.sellerId ?? null,
+              activeRowCount: activeRows.length,
+            }
+          );
+        }
+      }
 
       if (report.destinationConflicts.length) {
         throw new TransferAbortError(
@@ -859,12 +1076,12 @@ export const applyTransfer = async (input: {
        */
       const sourceConnectionCurrent =
         await tx.channelConnection.findUnique({
-          where: { id: report.sourceConnection.id },
+          where: { id: sourceConnectionId },
           select: { metadata: true },
         });
 
       await tx.channelConnection.update({
-        where: { id: report.sourceConnection.id },
+        where: { id: sourceConnectionId },
         data: {
           isActive: false,
           metadata: {
@@ -891,13 +1108,13 @@ export const applyTransfer = async (input: {
           messageCount: report.messageCount,
           connectionStates: {
             sourceConnectionBefore: {
-              id: report.sourceConnection?.id ?? null,
+              id: sourceConnectionId,
               isActive: true,
               connectionStatus:
-                report.sourceConnection?.connectionStatus ?? null,
+                sourceConnection.connectionStatus,
             },
             sourceConnectionAfter: {
-              id: report.sourceConnection?.id ?? null,
+              id: sourceConnectionId,
               isActive: false,
               connectionStatus: "TRANSFERRED",
               transferredToSellerId: destinationSellerId,
@@ -920,7 +1137,33 @@ export const applyTransfer = async (input: {
       isolationLevel:
         Prisma.TransactionIsolationLevel.Serializable,
     }
-  );
+    );
+  } catch (error) {
+    if (error instanceof TransferAbortError) {
+      throw error;
+    }
+
+    /*
+     * Concurrency safety: a unique-constraint violation (P2002,
+     * e.g. another apply created the active ownership row first)
+     * or a serialization/write conflict (P2034) means another
+     * transfer or webhook raced us. The transaction rolled back
+     * atomically — surface a typed, retryable error instead of
+     * an opaque database failure.
+     */
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      (error.code === "P2002" || error.code === "P2034")
+    ) {
+      throw new TransferAbortError(
+        "CONCURRENT_TRANSFER_CONFLICT",
+        "A concurrent transfer or webhook modified the same phone numbers; the transaction rolled back — retry the dry run and apply",
+        { prismaCode: error.code }
+      );
+    }
+
+    throw error;
+  }
 
   // ---- Post-commit realtime revocation ----
 
