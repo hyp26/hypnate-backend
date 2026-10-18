@@ -166,16 +166,16 @@ model Seller {
 
   createdAt DateTime @default(now())
 
-  users         User[]
-  products      Product[]
-  orders        Order[]
-  uploads       Upload[]
-  customers     Customer[]
-  stores        Store[]
-  conversations Conversation[]
-  notifications Notification[]
-  channels      ChannelConnection[]
-  quickReplies  QuickReply[] // FIX: added missing back-relation
+  users           User[]
+  products        Product[]
+  orders          Order[]
+  uploads         Upload[]
+  customers       Customer[]
+  stores          Store[]
+  conversations   Conversation[]
+  notifications   Notification[]
+  channels        ChannelConnection[]
+  quickReplies    QuickReply[] // FIX: added missing back-relation
   phoneOwnerships WhatsAppPhoneOwnership[]
 }
 
@@ -220,30 +220,26 @@ model ChannelConnection {
 // WHATSAPP PHONE-NUMBER OWNERSHIP
 // ─────────────────────────────────────────────
 
-/*
- * Normalized, authoritative mapping of every supported WhatsApp
- * phone-number ID to the single ChannelConnection that owns it.
- *
- * Replaces JSON-metadata scanning for inbound routing: inbound
- * message and status webhooks resolve the owning seller exclusively
- * through ACTIVE rows here and fail closed (no arbitrary first
- * match) when a phone number is unknown or ambiguous.
- *
- * DATABASE INVARIANT — enforced by the partial unique index
- * created in migration 20261018120000_add_whatsapp_phone_ownership:
- *
- *   at most one ACTIVE row per phoneNumberId.
- *
- * Rows are never deleted: a transfer or disconnect flips isActive
- * to false, preserving full audit history.
- */
+// Normalized, authoritative mapping of every supported WhatsApp
+// phone-number ID to the single ChannelConnection that owns it.
+//
+// Inbound message and status webhooks resolve the owner through
+// active ownership rows instead of scanning JSON metadata.
+// Unknown or ambiguous phone numbers must fail closed.
+//
+// DATABASE INVARIANT: the migration's partial unique index allows
+// at most one active row per phoneNumberId.
+//
+// Rows are retained for audit history. Transfers and disconnects
+// deactivate ownership rows rather than deleting them.
+
 model WhatsAppPhoneOwnership {
   id Int @id @default(autoincrement())
 
   phoneNumberId String
 
   connectionId Int
-  connection   ChannelConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  connection   ChannelConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   sellerId Int
   seller   Seller @relation(fields: [sellerId], references: [id])
@@ -400,6 +396,7 @@ model TelegramWebhookUpdate {
   @@unique([sellerId, updateId])
   @@index([status, createdAt])
 }
+
 model WebhookEvent {
   id Int @id @default(autoincrement())
 
@@ -472,8 +469,8 @@ model Order {
   trackingNumber String?
   timeline       Json?
 
-  createdAt DateTime @default(now())
-  products ProductOrder[]
+  createdAt DateTime       @default(now())
+  products  ProductOrder[]
 
   @@index([sellerId])
   @@index([customerId])
@@ -801,7 +798,7 @@ model SupportTicket {
   id           Int            @id @default(autoincrement())
   ticketNumber String         @unique
   subject      String
-  description String?         @db.Text
+  description  String?        @db.Text
   status       TicketStatus   @default(OPEN)
   priority     TicketPriority @default(MEDIUM)
   category     String?
