@@ -82,6 +82,8 @@ BEGIN
                             ("phoneNumberId", "connectionId", "sellerId", "wabaId", "isActive", "updatedAt")
                         VALUES (phone_id, conn."id", conn."sellerId", conn."externalAccountId", true, now());
                         RAISE NOTICE 'ownership: phone % -> connection % (seller %)', phone_id, conn."id", conn."sellerId";
+                    ELSIF owner."connectionId" = conn."id" THEN
+                        RAISE NOTICE 'ownership: phone % already assigned to connection % (duplicate metadata entry; skipped)', phone_id, conn."id";
                     ELSE
                         RAISE NOTICE 'ownership conflict: phone % already owned by connection %; skipping connection %', phone_id, owner."connectionId", conn."id";
                     END IF;
@@ -111,6 +113,8 @@ BEGIN
                             ("phoneNumberId", "connectionId", "sellerId", "wabaId", "isActive", "updatedAt")
                         VALUES (phone_id, conn."id", conn."sellerId", conn."externalAccountId", true, now());
                         RAISE NOTICE 'ownership: phone % -> connection % (seller %)', phone_id, conn."id", conn."sellerId";
+                    ELSIF owner."connectionId" = conn."id" THEN
+                        RAISE NOTICE 'ownership: phone % already assigned to connection % (duplicate metadata entry; skipped)', phone_id, conn."id";
                     ELSE
                         RAISE NOTICE 'ownership conflict: phone % already owned by connection %; skipping connection %', phone_id, owner."connectionId", conn."id";
                     END IF;
