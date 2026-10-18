@@ -49,8 +49,9 @@ CREATE INDEX "WhatsAppPhoneOwnership_connectionId_idx"
 DO $$
 DECLARE
     conn RECORD;
-    phone RECORD;
+    elem RECORD;
     phone_id TEXT;
+    owner RECORD;
 BEGIN
     FOR conn IN
         SELECT "id", "sellerId", "externalAccountId", "metadata"
@@ -59,18 +60,30 @@ BEGIN
           AND "isActive" = true
         ORDER BY "id" ASC
     LOOP
-        -- metadata.phoneNumberIds: array of ids
+        -- metadata.phoneNumberIds: array of id strings
         IF jsonb_typeof(conn."metadata" -> 'phoneNumberIds') = 'array' THEN
-            FOR phone IN SELECT * FROM jsonb_array_elements(conn."metadata" -> 'phoneNumberIds') AS elem
+            FOR elem IN
+                SELECT * FROM jsonb_array_elements(conn."metadata" -> 'phoneNumberIds') AS e(v)
             LOOP
-                IF jsonb_typeof(phone.elem) = 'string' THEN
-                    phone_id := phone.elem #>> '{}';
-                    IF phone_id IS NOT NULL AND phone_id <> '' THEN
+                phone_id := NULL;
+                IF jsonb_typeof(elem.v) = 'string' THEN
+                    phone_id := btrim(elem.v #>> '{}');
+                END IF;
+
+                IF phone_id IS NOT NULL AND phone_id <> '' THEN
+                    owner := NULL;
+                    SELECT * INTO owner
+                    FROM "WhatsAppPhoneOwnership"
+                    WHERE "phoneNumberId" = phone_id AND "isActive" = true
+                    LIMIT 1;
+
+                    IF owner IS NULL THEN
                         INSERT INTO "WhatsAppPhoneOwnership"
                             ("phoneNumberId", "connectionId", "sellerId", "wabaId", "isActive", "updatedAt")
-                        VALUES (phone_id, conn."id", conn."sellerId", conn."externalAccountId", true, now())
-                        ON CONFLICT DO NOTHING
-                        WHERE false; -- placeholder, replaced below
+                        VALUES (phone_id, conn."id", conn."sellerId", conn."externalAccountId", true, now());
+                        RAISE NOTICE 'ownership: phone % -> connection % (seller %)', phone_id, conn."id", conn."sellerId";
+                    ELSE
+                        RAISE NOTICE 'ownership conflict: phone % already owned by connection %; skipping connection %', phone_id, owner."connectionId", conn."id";
                     END IF;
                 END IF;
             END LOOP;
@@ -78,33 +91,45 @@ BEGIN
 
         -- metadata.phoneNumbers: array of {id | phone_number_id, ...}
         IF jsonb_typeof(conn."metadata" -> 'phoneNumbers') = 'array' THEN
-            FOR phone IN SELECT * FROM jsonb_array_elements(conn."metadata" -> 'phoneNumbers') AS elem
+            FOR elem IN
+                SELECT * FROM jsonb_array_elements(conn."metadata" -> 'phoneNumbers') AS e(v)
             LOOP
                 phone_id := COALESCE(
-                    phone.elem ->> 'id',
-                    phone.elem ->> 'phone_number_id'
+                    NULLIF(btrim(elem.v ->> 'id'), ''),
+                    NULLIF(btrim(elem.v ->> 'phone_number_id'), '')
                 );
-                IF phone_id IS NOT NULL AND phone_id <> '' THEN
-                    INSERT INTO "WhatsAppPhoneOwnership"
-                        ("phoneNumberId", "connectionId", "sellerId", "wabaId", "isActive", "updatedAt")
-                    VALUES (phone_id, conn."id", conn."sellerId", conn."externalAccountId", true, now());
-                    RAISE NOTICE 'ownership: phone % -> connection % (seller %)', phone_id, conn."id", conn."sellerId";
+
+                IF phone_id IS NOT NULL THEN
+                    owner := NULL;
+                    SELECT * INTO owner
+                    FROM "WhatsAppPhoneOwnership"
+                    WHERE "phoneNumberId" = phone_id AND "isActive" = true
+                    LIMIT 1;
+
+                    IF owner IS NULL THEN
+                        INSERT INTO "WhatsAppPhoneOwnership"
+                            ("phoneNumberId", "connectionId", "sellerId", "wabaId", "isActive", "updatedAt")
+                        VALUES (phone_id, conn."id", conn."sellerId", conn."externalAccountId", true, now());
+                        RAISE NOTICE 'ownership: phone % -> connection % (seller %)', phone_id, conn."id", conn."sellerId";
+                    ELSE
+                        RAISE NOTICE 'ownership conflict: phone % already owned by connection %; skipping connection %', phone_id, owner."connectionId", conn."id";
+                    END IF;
                 END IF;
             END LOOP;
         END IF;
     END LOOP;
 
-    -- Conflict report for phone numbers claimed by more than one
-    -- active connection. Duplicates were skipped by the guard above;
-    -- nothing is deleted or deactivated here.
-    FOR phone IN
+    -- Final conflict report: any phone number claimed by more than one
+    -- ACTIVE row (should be impossible after the guards above, but
+    -- reported defensively). Nothing is deleted or deactivated here.
+    FOR owner IN
         SELECT "phoneNumberId"
         FROM "WhatsAppPhoneOwnership"
         WHERE "isActive" = true
         GROUP BY "phoneNumberId"
         HAVING COUNT(*) > 1
     LOOP
-        RAISE NOTICE 'ownership conflict: phone % claimed by multiple connections', phone."phoneNumberId";
+        RAISE NOTICE 'ownership conflict: phone % claimed by multiple active rows', owner."phoneNumberId";
     END LOOP;
 END $$;
 
