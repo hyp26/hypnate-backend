@@ -258,6 +258,59 @@ model WhatsAppPhoneOwnership {
 }
 
 // ─────────────────────────────────────────────
+// WHATSAPP TRANSFER JOURNAL
+// ─────────────────────────────────────────────
+
+// Robust journal for WhatsApp connection-ownership transfers.
+//
+// The generic AuditLog model cannot represent the full
+// before/after state a transfer rollback needs, so transfers
+// use this dedicated journal. It stores NO access tokens,
+// secrets, or message contents — only identifiers, counts,
+// connection states and per-conversation before/after
+// ownership snapshots.
+//
+// A row is written per operation attempt:
+//   - DRY_RUN_REPORTED for read-only dry runs
+//   - COMPLETED / FAILED / ABORTED for apply attempts
+model WhatsAppTransferJournal {
+  id String @id @default(uuid())
+
+  sourceSellerId      Int
+  destinationSellerId Int
+
+  // Transferred WhatsApp phone-number IDs (Json array of strings).
+  phoneNumberIds Json
+  wabaId        String?
+
+  status String
+
+  actorAdminId Int?
+
+  // Full dry-run/apply report (counts, conflicts, checks).
+  report Json?
+
+  // Per-conversation before/after state for rollback:
+  // [{ conversationId, prevSellerId, prevCustomerId,
+  //    newCustomerId, prevAssignedToId }]
+  details Json?
+
+  conversationCount Int?
+  messageCount      Int?
+
+  // Before/after connection states (no tokens).
+  connectionStates Json?
+
+  error String?
+
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+
+  @@index([sourceSellerId, destinationSellerId])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────
 // CONVERSATION SYSTEM
 // ─────────────────────────────────────────────
 

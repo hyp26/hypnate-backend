@@ -11,6 +11,7 @@ import {
   PhoneOwnershipError,
   resolveActiveOwner,
 } from "../../../services/whatsappOwnership.service";
+import { emitToConversationRoom } from "../../../services/conversationRealtime.service";
 
 const getCustomerName = (
   contacts: unknown,
@@ -402,9 +403,16 @@ export const receiveMessage = async (
           conversation: item.conversation,
         });
 
-        io.to(
-          `room_${item.conversation.id}`
-        ).emit(
+        /*
+         * Tenant-safe room emission: only sockets of the
+         * conversation's CURRENT owner receive room events, so
+         * stale membership (e.g. after an ownership transfer)
+         * cannot expose messages across sellers.
+         */
+        await emitToConversationRoom(
+          io,
+          item.conversation.id,
+          item.conversation.sellerId,
           "new_message",
           item.message
         );
@@ -419,13 +427,17 @@ export const receiveMessage = async (
           status: item.message.status,
         });
 
-        io.to(
-          `room_${item.conversation.id}`
-        ).emit("message_status_updated", {
-          conversationId: item.conversation.id,
-          messageId: item.message.id,
-          status: item.message.status,
-        });
+        await emitToConversationRoom(
+          io,
+          item.conversation.id,
+          item.conversation.sellerId,
+          "message_status_updated",
+          {
+            conversationId: item.conversation.id,
+            messageId: item.message.id,
+            status: item.message.status,
+          }
+        );
       }
     }
 
