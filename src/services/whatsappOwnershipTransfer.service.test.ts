@@ -181,6 +181,79 @@ describe("recoverJournalCounts", () => {
     );
   });
 
+  it("returns null for NaN, Infinity, and unsafe integers", () => {
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: 1,
+        messageCount: NaN,
+        report: null,
+      }),
+      null
+    );
+
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: 1,
+        messageCount: Infinity,
+        report: null,
+      }),
+      null
+    );
+
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: 1,
+        messageCount: -Infinity,
+        report: null,
+      }),
+      null
+    );
+
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: Number.MAX_SAFE_INTEGER + 1,
+        messageCount: 42,
+        report: null,
+      }),
+      null
+    );
+
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: 1,
+        messageCount: Number.MAX_SAFE_INTEGER + 1,
+        report: null,
+      }),
+      null
+    );
+  });
+
+  it("rejects malformed counts in the report as well", () => {
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: null,
+        messageCount: null,
+        report: {
+          conversationCount: 2,
+          messageCount: "17",
+        },
+      }),
+      null
+    );
+
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: null,
+        messageCount: null,
+        report: {
+          conversationCount: -2,
+          messageCount: 17,
+        },
+      }),
+      null
+    );
+  });
+
   it("returns null when a structured count is valid but its pair is not", () => {
     assert.equal(
       recoverJournalCounts({
