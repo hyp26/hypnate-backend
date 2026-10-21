@@ -51,7 +51,8 @@ export type TransferAbortCode =
   | "ALREADY_COMPLETED"
   | "DESTINATION_CONNECTION_INACTIVE"
   | "JOURNAL_STATE_INVALID"
-  | "CONCURRENT_TRANSFER_CONFLICT";
+  | "CONCURRENT_TRANSFER_CONFLICT"
+  | "DESTINATION_CUSTOMER_MAPPING_AMBIGUOUS";
 
 export class TransferAbortError extends Error {
   constructor(
@@ -228,33 +229,127 @@ export const recoverJournalCounts = (journal: {
   conversationCount: number;
   messageCount: number;
 } | null => {
-  if (
+  const fromColumns =
     isNonNegativeInteger(journal.messageCount) &&
     isNonNegativeInteger(journal.conversationCount)
-  ) {
-    return {
-      conversationCount: journal.conversationCount,
-      messageCount: journal.messageCount,
-    };
-  }
+      ? {
+          conversationCount: journal.conversationCount,
+          messageCount: journal.messageCount,
+        }
+      : null;
 
   const report = journal.report;
 
-  if (report && typeof report === "object" && !Array.isArray(report)) {
-    const record = report as Record<string, unknown>;
+  const record =
+    report && typeof report === "object" && !Array.isArray(report)
+      ? (report as Record<string, unknown>)
+      : null;
 
+  const fromReport =
+    record &&
+    isNonNegativeInteger(record.messageCount) &&
+    isNonNegativeInteger(record.conversationCount)
+      ? {
+          conversationCount: record.conversationCount,
+          messageCount: record.messageCount,
+        }
+      : null;
+
+  /*
+   * Consistency: when BOTH sources hold valid counts they must
+   * AGREE. Disagreement means the journal row is internally
+   * inconsistent — treat as invalid and require manual review
+   * rather than picking a source arbitrarily.
+   */
+  if (fromColumns && fromReport) {
     if (
-      isNonNegativeInteger(record.messageCount) &&
-      isNonNegativeInteger(record.conversationCount)
+      fromColumns.conversationCount !== fromReport.conversationCount ||
+      fromColumns.messageCount !== fromReport.messageCount
     ) {
-      return {
-        conversationCount: record.conversationCount,
-        messageCount: record.messageCount,
-      };
+      return null;
     }
+
+    return fromColumns;
   }
 
-  return null;
+  return fromColumns ?? fromReport;
+};
+
+/*
+ * WABA agreement check for ALREADY_COMPLETED: the persisted
+ * journal's WABA id must be a non-empty string AND must match
+ * both the CURRENT source connection's WABA and the CURRENT
+ * destination connection's WABA. Any mismatch means the
+ * connection landscape changed since the recorded transfer —
+ * do NOT short-circuit; fall through to a full apply.
+ */
+export const wabaIdsAgree = (
+  journalWabaId: string | null,
+  currentSourceWabaId: string | null,
+  currentDestinationWabaId: string | null
+): boolean => {
+  if (
+    typeof journalWabaId !== "string" ||
+    !journalWabaId.trim() ||
+    typeof currentSourceWabaId !== "string" ||
+    !currentSourceWabaId.trim() ||
+    typeof currentDestinationWabaId !== "string" ||
+    !currentDestinationWabaId.trim()
+  ) {
+    return false;
+  }
+
+  return (
+    journalWabaId === currentSourceWabaId &&
+    journalWabaId === currentDestinationWabaId
+  );
+};
+
+/*
+ * Validate conversation IDs before socket eviction: every id
+ * must be a unique positive safe integer, and their count must
+ * match the valid recorded conversation count. Returns the
+ * validated ids, or null when the state is untrustworthy (the
+ * caller must abort for manual review — never evict arbitrary
+ * rooms from unvalidated data).
+ */
+export const validateEvictionConversationIds = (
+  ids: unknown,
+  expectedConversationCount: number
+): number[] | null {
+  if (!Array.isArray(ids)) {
+    return null;
+  }
+
+  if (
+    !isNonNegativeInteger(expectedConversationCount) ||
+    ids.length !== expectedConversationCount
+  ) {
+    return null;
+  }
+
+  const seen = new Set<number>();
+  const validated: number[] = [];
+
+  for (const id of ids) {
+    if (
+      typeof id !== "number" ||
+      !Number.isInteger(id) ||
+      id <= 0 ||
+      id > Number.MAX_SAFE_INTEGER
+    ) {
+      return null;
+    }
+
+    if (seen.has(id)) {
+      return null;
+    }
+
+    seen.add(id);
+    validated.push(id);
+  }
+
+  return validated;
 };
 
 /*
@@ -496,16 +591,28 @@ const buildTransferReport = async (
  * (journal writes only — no business data is touched) so
  * operations keep an audit trail of what was reviewed.
  */
+export type DryRunTransferResult = TransferReport & {
+  /*
+   * Whether the DRY_RUN_REPORTED audit-journal row was actually
+   * persisted. Journaling failure never breaks the read-only
+   * report, but it is NEVER silently claimed as recorded — the
+   * caller (admin API response) sees the real outcome.
+   */
+  auditRecorded: boolean;
+};
+
 export const dryRunTransfer = async (input: {
   sourceSellerId: number;
   destinationSellerId: number;
   actorAdminId?: number;
-}): Promise<TransferReport> => {
+}): Promise<DryRunTransferResult> => {
   const report = await buildTransferReport(
     prisma,
     input.sourceSellerId,
     input.destinationSellerId
   );
+
+  let auditRecorded = false;
 
   try {
     await prisma.whatsAppTransferJournal.create({
@@ -522,15 +629,18 @@ export const dryRunTransfer = async (input: {
         completedAt: new Date(),
       },
     });
+
+    auditRecorded = true;
   } catch (err) {
-    // Journaling must never break the read-only dry run.
+    // Journaling must never break the read-only dry run — but
+    // the failure is exposed to the caller via auditRecorded.
     logger.error(
       "WhatsApp transfer dry-run journaling failed",
       err
     );
   }
 
-  return report;
+  return { ...report, auditRecorded };
 };
 
 /*
@@ -755,7 +865,14 @@ export const applyTransfer = async (input: {
         transferred.has(id)
       );
 
-      if (coversClaim) {
+      if (
+        coversClaim &&
+        wabaIdsAgree(
+          completed.wabaId,
+          preReport.wabaId,
+          preReport.destinationConnection?.wabaId ?? null
+        )
+      ) {
         const counts = recoverJournalCounts(completed);
 
         if (!counts) {
@@ -997,21 +1114,97 @@ export const applyTransfer = async (input: {
           continue;
         }
 
+        /*
+         * Resolve the DESTINATION-owned customer safely:
+         *   1. by phone (exact match within the destination
+         *      seller). Multiple matches = ambiguous mapping:
+         *      abort rather than picking arbitrarily.
+         *   2. otherwise by email, same ambiguity rule; the
+         *      matched customer must not already belong to a
+         *      DIFFERENT phone (that would silently rewrite
+         *      someone else's customer record).
+         *   3. otherwise create a new destination-owned customer.
+         *
+         * If the conversation HAD a customer but has neither
+         * phone nor email to resolve or create by, abort — an
+         * existing customer relationship must never be silently
+         * set to null. A conversation that never had a customer
+         * keeps null.
+         */
         let newCustomerId: number | null = null;
 
         if (conversation.customerPhone) {
-          const existing =
-            await tx.customer.findFirst({
+          const byPhone =
+            await tx.customer.findMany({
               where: {
                 sellerId: destinationSellerId,
                 phone: conversation.customerPhone,
               },
-              select: { id: true },
+              select: { id: true, email: true },
             });
 
-          if (existing) {
-            newCustomerId = existing.id;
-          } else {
+          if (byPhone.length > 1) {
+            throw new TransferAbortError(
+              "DESTINATION_CUSTOMER_MAPPING_AMBIGUOUS",
+              "Multiple destination customers match this phone; resolve manually before transferring",
+              {
+                conversationId: conversation.id,
+                phone: conversation.customerPhone,
+                matchCount: byPhone.length,
+              }
+            );
+          }
+
+          if (byPhone.length === 1) {
+            newCustomerId = byPhone[0].id;
+          } else if (conversation.customerEmail) {
+            const byEmail =
+              await tx.customer.findMany({
+                where: {
+                  sellerId: destinationSellerId,
+                  email: conversation.customerEmail,
+                },
+                select: { id: true, phone: true },
+              });
+
+            if (byEmail.length > 1) {
+              throw new TransferAbortError(
+                "DESTINATION_CUSTOMER_MAPPING_AMBIGUOUS",
+                "Multiple destination customers match this email; resolve manually before transferring",
+                {
+                  conversationId: conversation.id,
+                  email: conversation.customerEmail,
+                  matchCount: byEmail.length,
+                }
+              );
+            }
+
+            if (
+              byEmail.length === 1 &&
+              byEmail[0].phone === null
+            ) {
+              // Same person, phone missing on the existing row:
+              // fill the phone in rather than duplicating.
+              await tx.customer.update({
+                where: { id: byEmail[0].id },
+                data: { phone: conversation.customerPhone },
+              });
+
+              newCustomerId = byEmail[0].id;
+            } else if (byEmail.length === 1) {
+              throw new TransferAbortError(
+                "DESTINATION_CUSTOMER_MAPPING_AMBIGUOUS",
+                "Destination customer with this email already has a different phone; resolve manually",
+                {
+                  conversationId: conversation.id,
+                  email: conversation.customerEmail,
+                  existingPhone: byEmail[0].phone,
+                }
+              );
+            }
+          }
+
+          if (newCustomerId === null) {
             const created = await tx.customer.create({
               data: {
                 sellerId: destinationSellerId,
@@ -1023,6 +1216,48 @@ export const applyTransfer = async (input: {
 
             newCustomerId = created.id;
           }
+        } else if (conversation.customerEmail) {
+          const byEmail = await tx.customer.findMany({
+            where: {
+              sellerId: destinationSellerId,
+              email: conversation.customerEmail,
+            },
+            select: { id: true },
+          });
+
+          if (byEmail.length > 1) {
+            throw new TransferAbortError(
+              "DESTINATION_CUSTOMER_MAPPING_AMBIGUOUS",
+              "Multiple destination customers match this email; resolve manually before transferring",
+              {
+                conversationId: conversation.id,
+                email: conversation.customerEmail,
+                matchCount: byEmail.length,
+              }
+            );
+          }
+
+          if (byEmail.length === 1) {
+            newCustomerId = byEmail[0].id;
+          } else {
+            const created = await tx.customer.create({
+              data: {
+                sellerId: destinationSellerId,
+                name: conversation.customerName,
+                phone: null,
+                email: conversation.customerEmail,
+              },
+            });
+
+            newCustomerId = created.id;
+          }
+        } else if (conversation.customerId !== null) {
+          throw new TransferAbortError(
+            "DESTINATION_CUSTOMER_MAPPING_AMBIGUOUS",
+            "Conversation has a customer but neither phone nor email to resolve the destination mapping; aborting instead of dropping the relationship",
+            { conversationId: conversation.id }
+          );
+        // customerId was already null: no relationship to drop.
         }
 
         // Move the conversation IN PLACE — id and messages retained.
@@ -1151,15 +1386,51 @@ export const applyTransfer = async (input: {
      * atomically — surface a typed, retryable error instead of
      * an opaque database failure.
      */
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      (error.code === "P2002" || error.code === "P2034")
-    ) {
-      throw new TransferAbortError(
-        "CONCURRENT_TRANSFER_CONFLICT",
-        "A concurrent transfer or webhook modified the same phone numbers; the transaction rolled back — retry the dry run and apply",
-        { prismaCode: error.code }
-      );
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      /*
+       * P2034: serialization / write conflict — the transaction
+       * rolled back atomically. Typed and retryable.
+       */
+      if (error.code === "P2034") {
+        throw new TransferAbortError(
+          "CONCURRENT_TRANSFER_CONFLICT",
+          "A concurrent transfer or webhook modified the same rows; the transaction rolled back — retry the dry run and apply",
+          { prismaCode: error.code }
+        );
+      }
+
+      /*
+       * P2002: classify ONLY a violation of the phone-ownership
+       * active-owner partial unique index as an ownership race.
+       * Unrelated uniqueness errors (e.g. customer or
+       * conversation constraints) are rethrown untouched —
+       * misreporting them as ownership conflicts would hide the
+       * real cause.
+       */
+      if (error.code === "P2002") {
+        const target = (error.meta?.target as unknown[] | string | undefined) ?? error.meta?.constraint;
+
+        const isOwnershipConstraint = Array.isArray(target)
+          ? target.some(
+              (entry) =>
+                typeof entry === "string" &&
+                entry.includes(
+                  "WhatsAppPhoneOwnership_phoneNumberId_active_key"
+                )
+            )
+          : typeof target === "string" &&
+            target.includes(
+              "WhatsAppPhoneOwnership_phoneNumberId_active_key"
+            );
+
+        if (isOwnershipConstraint) {
+          throw new TransferAbortError(
+            "CONCURRENT_TRANSFER_CONFLICT",
+            "A concurrent transfer raced the phone-ownership unique index; the transaction rolled back — retry the dry run and apply",
+            { prismaCode: error.code }
+          );
+        }
+      }
     }
 
     throw error;
@@ -1167,9 +1438,28 @@ export const applyTransfer = async (input: {
 
   // ---- Post-commit realtime revocation ----
 
+  /*
+   * Validate the conversation IDs before evicting any room:
+   * unique positive safe integers whose count matches the
+   * recorded conversation count. Untrusted state aborts for
+   * manual review instead of evicting arbitrary rooms.
+   */
+  const evictionIds = validateEvictionConversationIds(
+    result.conversationIds,
+    result.report.conversationCount
+  );
+
+  if (!evictionIds) {
+    throw new TransferAbortError(
+      "JOURNAL_STATE_INVALID",
+      "Transfer completed but its conversation list is invalid; socket eviction was skipped — manual review required",
+      { journalId: result.journalId }
+    );
+  }
+
   const evictedSockets = await evictSocketsFromConversations(
     input.io,
-    result.conversationIds,
+    evictionIds,
     destinationSellerId
   );
 

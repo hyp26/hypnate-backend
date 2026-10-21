@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { getSellerId } from "../services/seller.service";
 import { sendMessage as sendPlatformMessage } from "../services/messaging/messaging.service";
+import { emitToConversationRoom } from "../services/conversationRealtime.service";
 import { logger } from "../utils/logger";
 
 // ─────────────────────────────────────────────
@@ -550,7 +551,18 @@ export const sendMessage = async (
         }
       );
 
-      io.to(`room_${conversation.id}`).emit(
+      /*
+       * Tenant-safe room emission: only sockets of the
+       * conversation's CURRENT owner (verified above via the
+       * seller-scoped lookup) receive the room event, so stale
+       * room membership — e.g. an old seller's socket still
+       * joined after an ownership transfer — cannot receive
+       * messages from another tenant.
+       */
+      await emitToConversationRoom(
+        io,
+        conversation.id,
+        sellerId,
         "new_message",
         message
       );
