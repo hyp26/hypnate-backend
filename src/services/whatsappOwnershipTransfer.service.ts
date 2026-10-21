@@ -206,32 +206,43 @@ const normalizePhoneIdSet = (ids: string[]): Set<string> => {
   return set;
 };
 
-const isNonNegativeInteger = (
+/*
+ * Runtime count validation for untrusted persisted values.
+ * Accepts `unknown` because journal data is untrusted: a value
+ * passes ONLY when it is a number AND a non-negative SAFE
+ * integer. Strings, negative numbers, fractional numbers, NaN,
+ * Infinity, and unsafe integers are all rejected.
+ */
+const isNonNegativeSafeInteger = (
   value: unknown
 ): value is number =>
   typeof value === "number" &&
-  Number.isInteger(value) &&
+  Number.isSafeInteger(value) &&
   value >= 0;
 
 /*
  * Recover conversation/message counts for an already-completed
- * transfer from its persisted journal row. Trust the structured
+ * transfer from its persisted journal row. The journal input is
+ * UNTRUSTED: the structured count columns are typed `unknown`
+ * (a declared column type guarantees nothing about the value
+ * actually persisted) and are validated at runtime with
+ * isNonNegativeSafeInteger before use. Trust the structured
  * integer columns first, then the persisted transfer report.
- * If neither holds a trustworthy non-negative integer pair,
+ * If neither holds a trustworthy non-negative safe-integer pair,
  * return null — the caller must abort and require manual
  * review. Counts are NEVER invented or defaulted to zero.
  */
 export const recoverJournalCounts = (journal: {
   report: Prisma.JsonValue;
-  conversationCount: number | null;
-  messageCount: number | null;
+  conversationCount: unknown;
+  messageCount: unknown;
 }): {
   conversationCount: number;
   messageCount: number;
 } | null => {
   const fromColumns =
-    isNonNegativeInteger(journal.messageCount) &&
-    isNonNegativeInteger(journal.conversationCount)
+    isNonNegativeSafeInteger(journal.messageCount) &&
+    isNonNegativeSafeInteger(journal.conversationCount)
       ? {
           conversationCount: journal.conversationCount,
           messageCount: journal.messageCount,
@@ -247,8 +258,8 @@ export const recoverJournalCounts = (journal: {
 
   const fromReport =
     record &&
-    isNonNegativeInteger(record.messageCount) &&
-    isNonNegativeInteger(record.conversationCount)
+    isNonNegativeSafeInteger(record.messageCount) &&
+    isNonNegativeSafeInteger(record.conversationCount)
       ? {
           conversationCount: record.conversationCount,
           messageCount: record.messageCount,
@@ -322,7 +333,7 @@ export const validateEvictionConversationIds = (
   }
 
   if (
-    !isNonNegativeInteger(expectedConversationCount) ||
+    !isNonNegativeSafeInteger(expectedConversationCount) ||
     ids.length !== expectedConversationCount
   ) {
     return null;
