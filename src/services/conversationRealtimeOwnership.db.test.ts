@@ -314,7 +314,7 @@ describe(
       assert.equal(authorizedSellerId, sellerB.id);
 
       // A receives nothing — neither room nor seller broadcast.
-      assert.deepEqual(socketA.emitted, []);
+      assert.deepEqual([...socketA.emitted], []);
       assert.deepEqual(
         io.roomEmits.filter((e) => e.room === `seller_${sellerA.id}`),
         []
@@ -433,11 +433,14 @@ describe(
 
       // While the transfer is uncommitted, the emission must be
       // blocked on the lock: nothing emitted to anyone yet.
+      // Snapshot copies ([...emitted]) keep the compiler from
+      // narrowing the LIVE mutable arrays to never[] — they are
+      // appended to asynchronously after the transfer commits.
       await sleep(400);
 
       assert.equal(transferCommitted, false);
-      assert.deepEqual(socketA.emitted, []);
-      assert.deepEqual(socketB.emitted, []);
+      assert.deepEqual([...socketA.emitted], []);
+      assert.deepEqual([...socketB.emitted], []);
 
       await transferPromise;
       const authorizedSellerId = await emissionPromise;
@@ -445,7 +448,7 @@ describe(
       // The emission re-read under the lock AFTER the transfer
       // committed: it authorizes to B, never to the stale A.
       assert.equal(authorizedSellerId, sellerB.id);
-      assert.deepEqual(socketA.emitted, []);
+      assert.deepEqual([...socketA.emitted], []);
       assert.equal(socketB.emitted.length, 1);
       assert.equal(socketB.emitted[0].event, "new_message");
     });
@@ -486,8 +489,8 @@ describe(
       );
 
       assert.equal(result, null);
-      assert.deepEqual(socketA.emitted, []);
-      assert.deepEqual(socketB.emitted, []);
+      assert.deepEqual([...socketA.emitted], []);
+      assert.deepEqual([...socketB.emitted], []);
 
       void connectionA;
     });
@@ -515,7 +518,7 @@ describe(
       ]);
 
       assert.equal(result, null);
-      assert.deepEqual(socket.emitted, []);
+      assert.deepEqual([...socket.emitted], []);
     });
 
     it("fails closed for a missing conversation id", async () => {
@@ -552,7 +555,7 @@ describe(
 
       assert.equal(result, seller.id);
       assert.equal(ownerSocket.emitted.length, 1);
-      assert.deepEqual(otherSocket.emitted, []);
+      assert.deepEqual([...otherSocket.emitted], []);
     });
   }
 );
