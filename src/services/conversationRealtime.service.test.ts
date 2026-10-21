@@ -13,7 +13,7 @@ import { emitToConversationRoom } from "./conversationRealtime.service";
  * tests live in conversationRealtimeOwnership.db.test.ts and
  * MUST be run against a disposable PostgreSQL database.
  *
- * NOT executed in the authoring environment (no Node.js
+ * NOT EXECUTED in the authoring environment (no Node.js
  * available) — run with
  * `node --test dist/services/conversationRealtime.service.test.js`
  * after `npx prisma generate && npm run build`.
@@ -31,11 +31,27 @@ const makeSocket = (sellerId: number | undefined) => {
   };
 };
 
-const makeIo = (sockets: any[]) => ({
-  in: (_room: string) => ({
-    fetchSockets: async () => sockets,
-  }),
-});
+/*
+ * The production helper (asIo) requires EVERY room handle to
+ * provide BOTH fetchSockets() and emit() — an io lacking either
+ * is rejected. The mock therefore implements both so the tests
+ * exercise the real delivery path rather than the early
+ * guard return.
+ */
+const makeIo = (sockets: any[]) => {
+  const roomEmits: Array<{ room: string; event: string; payload: unknown }> =
+    [];
+
+  return {
+    in: (room: string) => ({
+      fetchSockets: async () => sockets,
+      emit: (event: string, payload: unknown) => {
+        roomEmits.push({ room, event, payload });
+      },
+    }),
+    roomEmits,
+  };
+};
 
 describe("emitToConversationRoom — per-socket owner filter", () => {
   it("delivers only to sockets whose sellerId matches the authorized seller", async () => {
@@ -74,10 +90,18 @@ describe("emitToConversationRoom — per-socket owner filter", () => {
   });
 
   it("fails soft (returns delivered count) when fetchSockets throws", async () => {
+    /*
+     * fetchSockets() throws but the room handle still exposes
+     * a valid emit(): the test exercises the genuine adapter
+     * failure path inside delivery, not the asIo() guard.
+     */
     const io = {
       in: (_room: string) => ({
         fetchSockets: async () => {
           throw new Error("adapter gone");
+        },
+        emit: (_event: string, _payload: unknown) => {
+          // Intentionally not called: fetchSockets fails first.
         },
       }),
     };
