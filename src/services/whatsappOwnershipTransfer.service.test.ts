@@ -4,6 +4,8 @@ import {
   evictSocketsFromConversations,
   parseJournalPhoneIds,
   recoverJournalCounts,
+  validateEvictionConversationIds,
+  wabaIdsAgree,
   TransferAbortError,
 } from "./whatsappOwnershipTransfer.service";
 
@@ -188,6 +190,127 @@ describe("recoverJournalCounts", () => {
       }),
       null
     );
+  });
+
+  it("treats disagreeing structured and report counts as inconsistent (invalid)", () => {
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: 3,
+        messageCount: 42,
+        report: {
+          conversationCount: 3,
+          messageCount: 41,
+        },
+      }),
+      null
+    );
+
+    assert.equal(
+      recoverJournalCounts({
+        conversationCount: 3,
+        messageCount: 42,
+        report: {
+          conversationCount: 4,
+          messageCount: 42,
+        },
+      }),
+      null
+    );
+  });
+
+  it("accepts agreeing structured and report counts", () => {
+    assert.deepEqual(
+      recoverJournalCounts({
+        conversationCount: 3,
+        messageCount: 42,
+        report: {
+          conversationCount: 3,
+          messageCount: 42,
+        },
+      }),
+      { conversationCount: 3, messageCount: 42 }
+    );
+  });
+});
+
+/* ----------------------------------------------------
+   wabaIdsAgree — idempotent-retry WABA agreement
+---------------------------------------------------- */
+
+describe("wabaIdsAgree", () => {
+  it("accepts when journal, source and destination WABA ids all match", () => {
+    assert.equal(
+      wabaIdsAgree("WABA_1", "WABA_1", "WABA_1"),
+      true
+    );
+  });
+
+  it("rejects when the journal WABA id is null or empty", () => {
+    assert.equal(wabaIdsAgree(null, "WABA_1", "WABA_1"), false);
+    assert.equal(wabaIdsAgree("", "WABA_1", "WABA_1"), false);
+    assert.equal(wabaIdsAgree("   ", "WABA_1", "WABA_1"), false);
+  });
+
+  it("rejects when the current source or destination WABA differs", () => {
+    assert.equal(
+      wabaIdsAgree("WABA_1", "WABA_2", "WABA_1"),
+      false
+    );
+    assert.equal(
+      wabaIdsAgree("WABA_1", "WABA_1", "WABA_2"),
+      false
+    );
+  });
+
+  it("rejects when current WABA ids are null (unknown landscape)", () => {
+    assert.equal(wabaIdsAgree("WABA_1", null, "WABA_1"), false);
+    assert.equal(wabaIdsAgree("WABA_1", "WABA_1", null), false);
+  });
+});
+
+/* ----------------------------------------------------
+   validateEvictionConversationIds — pre-eviction guard
+---------------------------------------------------- */
+
+describe("validateEvictionConversationIds", () => {
+  it("accepts unique positive safe integers matching the expected count", () => {
+    assert.deepEqual(
+      validateEvictionConversationIds([5, 9, 2], 3),
+      [5, 9, 2]
+    );
+  });
+
+  it("accepts an empty list with an expected count of zero", () => {
+    assert.deepEqual(validateEvictionConversationIds([], 0), []);
+  });
+
+  it("rejects non-array input", () => {
+    assert.equal(validateEvictionConversationIds(null, 0), null);
+    assert.equal(validateEvictionConversationIds("1,2", 2), null);
+  });
+
+  it("rejects count mismatch with the recorded conversation count", () => {
+    assert.equal(validateEvictionConversationIds([1, 2], 3), null);
+    assert.equal(validateEvictionConversationIds([1, 2, 3], 2), null);
+    assert.equal(validateEvictionConversationIds([1], -1), null);
+  });
+
+  it("rejects non-integer, zero, negative or unsafe ids", () => {
+    assert.equal(validateEvictionConversationIds([1.5, 2], 2), null);
+    assert.equal(validateEvictionConversationIds([0, 2], 2), null);
+    assert.equal(validateEvictionConversationIds([-1, 2], 2), null);
+    assert.equal(validateEvictionConversationIds(["1", 2], 2), null);
+    assert.equal(
+      validateEvictionConversationIds(
+        [Number.MAX_SAFE_INTEGER + 1, 2],
+        2
+      ),
+      null
+    );
+  });
+
+  it("rejects duplicate conversation ids", () => {
+    assert.equal(validateEvictionConversationIds([7, 7], 2), null);
   });
 });
 
