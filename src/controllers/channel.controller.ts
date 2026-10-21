@@ -32,6 +32,7 @@ import {
 import {
   deactivateOwnershipForConnection,
   hasOtherActiveWabaConnection,
+  PhoneOwnershipError,
   syncConnectionOwnership,
 } from "../services/whatsappOwnership.service";
 
@@ -615,8 +616,6 @@ export const whatsappCallback = async (
     }
 
     /*
-     * 6. Persist the connection with its lifecycle state.
-     *
      * The plaintext access token NEVER goes into the response
      * and is stored encrypted only.
      */
@@ -654,48 +653,67 @@ export const whatsappCallback = async (
         : "webhook_subscription_failed",
     };
 
-    const connection = await prisma.channelConnection.upsert({
-      where: {
-        sellerId_platform: {
-          sellerId,
-          platform: "WHATSAPP",
-        },
-      },
-      create: {
-        sellerId,
-        platform: "WHATSAPP",
-        name:
-          typeof whatsappBusiness.name === "string"
-            ? whatsappBusiness.name
-            : "WhatsApp Business",
-        accessToken: encrypt(accessToken),
-        externalAccountId: wabaId,
-        metadata: connectionMetadata,
-        isActive: true,
-      },
-      update: {
-        name:
-          typeof whatsappBusiness.name === "string"
-            ? whatsappBusiness.name
-            : "WhatsApp Business",
-        accessToken: encrypt(accessToken),
-        externalAccountId: wabaId,
-        metadata: connectionMetadata,
-        isActive: true,
-      },
-    });
-
     /*
-     * 6b. Keep the normalized phone-number ownership mapping in
-     *     sync with the metadata this connection now claims. Any
-     *     previously active ownership row for a claimed phone
-     *     number is deactivated, so this connection becomes the
-     *     single authoritative owner for inbound routing. The
-     *     partial unique index aborts the transaction rather
-     *     than allowing duplicates.
+     * 6. Persist the connection AND synchronize the normalized
+     *    phone-number ownership mapping in ONE atomic database
+     *    transaction.
+     *
+     *    SECURITY (audit finding H-3): the ownership mapping is
+     *    authoritative and can only change hands via the
+     *    administrative transfer workflow. syncConnectionOwnership
+     *    acquires the per-phone advisory locks, re-validates
+     *    current ownership AFTER locking, and throws
+     *    PhoneOwnershipError("PHONE_OWNERSHIP_CONFLICT") when any
+     *    claimed phone number is actively owned by ANOTHER
+     *    connection (another seller OR another connection of the
+     *    same seller). Because the connection upsert runs in the
+     *    SAME transaction, the conflict rolls the upsert back
+     *    too: no partially persisted connection is left behind,
+     *    the existing owner's mapping is untouched, and the
+     *    seller is NOT redirected as connected.
+     *
+     *    NOTE ON EXTERNAL SIDE EFFECTS: the WABA webhook
+     *    subscription requested in step 5 is a Meta-side
+     *    operation that this database transaction CANNOT roll
+     *    back. That is safe and intentional: the subscription is
+     *    app-level and additive for a WABA that the existing
+     *    owner still uses, so on a conflict it is left in place
+     *    (another valid connection may depend on it). This code
+     *    never unsubscribes on the failure path.
      */
     try {
       await prisma.$transaction(async (tx) => {
+        const connection = await tx.channelConnection.upsert({
+          where: {
+            sellerId_platform: {
+              sellerId,
+              platform: "WHATSAPP",
+            },
+          },
+          create: {
+            sellerId,
+            platform: "WHATSAPP",
+            name:
+              typeof whatsappBusiness.name === "string"
+                ? whatsappBusiness.name
+                : "WhatsApp Business",
+            accessToken: encrypt(accessToken),
+            externalAccountId: wabaId,
+            metadata: connectionMetadata,
+            isActive: true,
+          },
+          update: {
+            name:
+              typeof whatsappBusiness.name === "string"
+                ? whatsappBusiness.name
+                : "WhatsApp Business",
+            accessToken: encrypt(accessToken),
+            externalAccountId: wabaId,
+            metadata: connectionMetadata,
+            isActive: true,
+          },
+        });
+
         await syncConnectionOwnership(
           tx,
           {
@@ -707,9 +725,50 @@ export const whatsappCallback = async (
         );
       });
     } catch (err) {
+      if (err instanceof PhoneOwnershipError) {
+        /*
+         * Ownership conflict: fail closed. Log only the failure
+         * category and non-sensitive identifiers — never tokens,
+         * Meta response bodies, or raw exception payloads.
+         */
+        logger.error(
+          "WhatsApp OAuth rejected: phone-number ownership conflict",
+          {
+            code: err.code,
+            sellerId,
+          }
+        );
+
+        return redirectWithWhatsAppResult(
+          res,
+          "error",
+          "phone_ownership_conflict",
+          verifiedReturnTo
+        );
+      }
+
+      /*
+       * Any other persistence failure also rolls the whole
+       * transaction back and must NOT report a successful
+       * connect. Log the failure category and a safe message
+       * only.
+       */
       logger.error(
-        "WhatsApp phone-number ownership sync failed",
-        err
+        "WhatsApp OAuth persistence failed",
+        {
+          sellerId,
+          message:
+            err instanceof Error
+              ? err.message
+              : "unknown error",
+        }
+      );
+
+      return redirectWithWhatsAppResult(
+        res,
+        "error",
+        "connection_failed",
+        verifiedReturnTo
       );
     }
 

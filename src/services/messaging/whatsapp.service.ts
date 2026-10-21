@@ -4,24 +4,16 @@ import { decrypt } from "../crypto.service";
 import { ENV } from "../../config/env";
 import { logger } from "../../utils/logger";
 import { AppError } from "../../utils/AppError";
+import {
+  assertOwnedPhoneNumberForSend,
+  PhoneOwnershipError,
+} from "../whatsappOwnership.service";
 
 const GRAPH_VERSION =
   ENV.META_GRAPH_VERSION || "v25.0";
 
 const GRAPH_URL =
   `https://graph.facebook.com/${GRAPH_VERSION}`;
-
-type WhatsAppPhoneNumber = {
-  id?: string;
-  phone_number_id?: string;
-};
-
-type WhatsAppMetadata = {
-  phoneNumberId?: string;
-  primaryPhoneNumberId?: string;
-  phoneNumberIds?: unknown;
-  phoneNumbers?: unknown;
-};
 
 type MetaPermissionEntry = {
   permission?: string;
@@ -185,8 +177,7 @@ export const diagnoseKnownWabaAccess = async (
         httpStatus: axiosError.response?.status ?? null,
         metaErrorCode:
           axiosError.response?.data?.error?.code ?? null,
-        metaErrorType:
-          axiosError.response?.data?.error?.type ?? null,
+        metaErrorType: axiosError.response?.data?.error?.type ?? null,
         metaErrorMessage:
           axiosError.response?.data?.error?.message ?? null,
       }
@@ -239,8 +230,7 @@ export const diagnoseOAuthTokenIdentity = async (
         httpStatus: axiosError.response?.status ?? null,
         metaErrorCode:
           axiosError.response?.data?.error?.code ?? null,
-        metaErrorType:
-          axiosError.response?.data?.error?.type ?? null,
+        metaErrorType: axiosError.response?.data?.error?.type ?? null,
         metaErrorMessage:
           axiosError.response?.data?.error?.message ?? null,
       }
@@ -292,8 +282,7 @@ export const diagnoseOAuthTokenIdentity = async (
         httpStatus: axiosError.response?.status ?? null,
         metaErrorCode:
           axiosError.response?.data?.error?.code ?? null,
-        metaErrorType:
-          axiosError.response?.data?.error?.type ?? null,
+        metaErrorType: axiosError.response?.data?.error?.type ?? null,
         metaErrorMessage:
           axiosError.response?.data?.error?.message ?? null,
       }
@@ -423,8 +412,7 @@ export const diagnoseOAuthTokenScopes = async (
         httpStatus: axiosError.response?.status ?? null,
         metaErrorCode:
           axiosError.response?.data?.error?.code ?? null,
-        metaErrorType:
-          axiosError.response?.data?.error?.type ?? null,
+        metaErrorType: axiosError.response?.data?.error?.type ?? null,
         metaErrorMessage:
           axiosError.response?.data?.error?.message ?? null,
       }
@@ -549,10 +537,8 @@ export const getGrantedWabaIdsFromToken = async (
       {
         graphVersion: GRAPH_VERSION,
         httpStatus: axiosError.response?.status ?? null,
-        metaErrorCode:
-          axiosError.response?.data?.error?.code ?? null,
-        metaErrorType:
-          axiosError.response?.data?.error?.type ?? null,
+        metaErrorCode: axiosError.response?.data?.error?.code ?? null,
+        metaErrorType: axiosError.response?.data?.error?.type ?? null,
         metaErrorMessage:
           axiosError.response?.data?.error?.message ?? null,
       }
@@ -649,6 +635,18 @@ export const unsubscribeWabaWebhooks = async (
   return data?.success === true;
 };
 
+/*
+ * LOW-LEVEL send primitive: submits a message to Meta with a
+ * raw access token and phone-number ID.
+ *
+ * SECURITY: callers MUST verify, via
+ * assertOwnedPhoneNumberForSend() (or the administrative
+ * transfer workflow), that the phone-number ID is actively
+ * owned by the seller whose credential is used — never call
+ * this directly with an unverified phone-number ID from
+ * connection metadata. sendWhatsAppMessageForSeller() is the
+ * guarded entry point.
+ */
 export const sendWhatsAppMessage = async (
   accessToken: string,
   phoneNumberId: string,
@@ -676,6 +674,89 @@ export const sendWhatsAppMessage = async (
   return data;
 };
 
+/*
+ * Pure phone-number selection for outbound sends
+ * (audit finding H-3). The normalized ownership mapping is
+ * the ONLY candidate source — connection metadata is never
+ * used as a fallback. The selection is then validated against
+ * the ownership mapping by the caller.
+ *
+ *   - an explicitly requested number is always used as given
+ *     (and then ownership-validated);
+ *   - with no explicit request, exactly ONE active owned
+ *     number resolves unambiguously;
+ *   - multiple owned numbers are AMBIGUOUS — an arbitrary
+ *     first number is never selected;
+ *   - no owned numbers → NONE (fail closed).
+ */
+export type OutboundPhoneNumberSelection =
+  | { kind: "selected"; phoneNumberId: string }
+  | { kind: "ambiguous"; phoneNumberIds: string[] }
+  | { kind: "none" };
+
+export const selectOutboundPhoneNumberId = (
+  requestedPhoneNumberId: string | undefined,
+  ownedPhoneNumberIds: string[]
+): OutboundPhoneNumberSelection => {
+  const requested = requestedPhoneNumberId?.trim();
+
+  if (requested) {
+    return { kind: "selected", phoneNumberId: requested };
+  }
+
+  const unique = [
+    ...new Set(
+      ownedPhoneNumberIds
+        .map((id) => (typeof id === "string" ? id.trim() : ""))
+        .filter(Boolean)
+    ),
+  ];
+
+  if (unique.length === 1) {
+    return { kind: "selected", phoneNumberId: unique[0] };
+  }
+
+  if (unique.length > 1) {
+    return { kind: "ambiguous", phoneNumberIds: unique };
+  }
+
+  return { kind: "none" };
+};
+
+/*
+ * Outbound WhatsApp send with ownership enforcement
+ * (audit finding H-3).
+ *
+ * Before any message is submitted to Meta:
+ *   1. the seller's active WhatsApp connection is loaded
+ *      (its credential is the only one that may be used);
+ *   2. the phone-number ID is chosen from the connection's
+ *      ACTIVE ownership rows only — never from connection
+ *      metadata — and must be unambiguous unless the caller
+ *      explicitly requested a specific number;
+ *   3. ownership is re-verified UNDER the same per-phone
+ *      advisory lock used by webhooks, transfers, and OAuth
+ *      sync (assertOwnedPhoneNumberForSend): the active owner
+ *      must be exactly this seller AND exactly this
+ *      connection, otherwise the send is rejected with a safe
+ *      403 BEFORE the Meta API is called.
+ *
+ * DOCUMENTED RESIDUAL RACE (not claimed to be eliminated):
+ * the verification transaction COMMITS before the Meta HTTP
+ * request. An administrative transfer that acquires the phone
+ * lock after this commit but before Meta accepts the request
+ * can flip ownership mid-send. Closing this window strictly
+ * would require holding the advisory lock (and an open
+ * database transaction) across the unbounded Meta network
+ * call, which this design deliberately avoids for
+ * operational safety. The consequence is bounded to a single
+ * already-authorized message submitted via the number's own
+ * phone-number ID; inbound routing and every later send
+ * resolve to the new owner. If stricter ordering is ever
+ * required, a send reservation / coordinated lock held across
+ * the HTTP call with an explicit timeout is the follow-up
+ * design.
+ */
 export const sendWhatsAppMessageForSeller = async (
   sellerId: number,
   to: string,
@@ -690,8 +771,8 @@ export const sendWhatsAppMessageForSeller = async (
         isActive: true,
       },
       select: {
+        id: true,
         accessToken: true,
-        metadata: true,
       },
     });
 
@@ -699,58 +780,74 @@ export const sendWhatsAppMessageForSeller = async (
     !connection ||
     !connection.accessToken
   ) {
-    throw new Error(
-      "WhatsApp is not connected for this seller"
+    throw new AppError(
+      "WhatsApp is not connected for this seller",
+      400
     );
   }
 
-  const metadata =
-    (connection.metadata ?? {}) as WhatsAppMetadata;
+  /*
+   * Candidate phone numbers come from the ACTIVE ownership
+   * rows of this connection — the authoritative mapping —
+   * never from connection metadata.
+   */
+  const ownedRows =
+    await prisma.whatsAppPhoneOwnership.findMany({
+      where: {
+        connectionId: connection.id,
+        isActive: true,
+      },
+      select: {
+        phoneNumberId: true,
+      },
+      orderBy: {
+        phoneNumberId: "asc",
+      },
+    });
 
-  let resolvedPhoneNumberId =
-    phoneNumberId?.trim() ||
-    metadata.primaryPhoneNumberId ||
-    metadata.phoneNumberId;
+  const selection = selectOutboundPhoneNumberId(
+    phoneNumberId,
+    ownedRows.map((row) => row.phoneNumberId)
+  );
 
-  if (!resolvedPhoneNumberId) {
-    if (
-      Array.isArray(metadata.phoneNumberIds) &&
-      metadata.phoneNumberIds.length > 0
-    ) {
-      resolvedPhoneNumberId = String(
-        metadata.phoneNumberIds[0]
-      );
-    }
-  }
-
-  if (!resolvedPhoneNumberId) {
-    if (
-      Array.isArray(metadata.phoneNumbers)
-    ) {
-      const first = metadata.phoneNumbers.find(
-        (phone): phone is WhatsAppPhoneNumber =>
-          !!phone &&
-          typeof phone === "object" &&
-          !!(
-            (phone as WhatsAppPhoneNumber).id ??
-            (phone as WhatsAppPhoneNumber)
-              .phone_number_id
-          )
-      );
-
-      resolvedPhoneNumberId = first
-        ? String(
-            first.id ??
-              first.phone_number_id
-          )
-        : undefined;
-    }
-  }
-
-  if (!resolvedPhoneNumberId) {
-    throw new Error(
-      "WhatsApp phone number is not configured"
+  if (selection.kind === "ambiguous") {
+    throw new AppError(
+      "Multiple WhatsApp phone numbers are owned by this connection; specify which phone-number ID to use",
+      400
     );
+  }
+
+  if (selection.kind === "none") {
+    throw new AppError(
+      "No active WhatsApp phone-number ownership exists for this connection. Please reconnect WhatsApp.",
+      400
+    );
+  }
+
+  const resolvedPhoneNumberId = selection.phoneNumberId;
+
+  /*
+   * Ownership verification under the per-phone advisory lock.
+   * Rejected BEFORE any Meta API call — unknown, ambiguous,
+   * inactive, or foreign-owned numbers never reach Meta.
+   */
+  try {
+    await prisma.$transaction(async (tx) => {
+      await assertOwnedPhoneNumberForSend(tx, {
+        sellerId,
+        connectionId: connection.id,
+        phoneNumberId: resolvedPhoneNumberId,
+      });
+    });
+  } catch (err) {
+    if (err instanceof PhoneOwnershipError) {
+      throw new AppError(
+        "This WhatsApp phone number is not owned by the requesting seller's connection",
+        403
+      );
+    }
+
+    throw err;
   }
 
   let accessToken: string;
@@ -760,8 +857,9 @@ export const sendWhatsAppMessageForSeller = async (
       connection.accessToken
     );
   } catch {
-    throw new Error(
-      "WhatsApp access token could not be decrypted"
+    throw new AppError(
+      "WhatsApp access token could not be decrypted",
+      500
     );
   }
 
@@ -773,6 +871,16 @@ export const sendWhatsAppMessageForSeller = async (
   );
 };
 
+/*
+ * LOW-LEVEL template send primitive: submits a WhatsApp
+ * template with a raw access token and phone-number ID.
+ *
+ * SECURITY: no in-repo caller currently exists. Any future
+ * caller MUST first verify ownership of the phone-number ID
+ * via assertOwnedPhoneNumberForSend() for the seller whose
+ * credential is used — the phone-number ID must never be
+ * taken from unverified connection metadata.
+ */
 export const sendWhatsAppTemplate = async (
   accessToken: string,
   phoneNumberId: string,
