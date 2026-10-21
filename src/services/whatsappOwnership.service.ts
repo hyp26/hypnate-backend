@@ -14,6 +14,13 @@ import { logger } from "../utils/logger";
  * Inbound routing must resolve ownership ONLY through this
  * mapping and fail closed on unknown/ambiguous numbers — never
  * by scanning connection metadata for a first match.
+ *
+ * SECURITY (audit finding H-3): ownership can only CHANGE
+ * hands through the administrative transfer workflow. The
+ * OAuth reconnect path (syncConnectionOwnership) REJECTS any
+ * claim to a phone number that is actively owned by another
+ * connection — it never deactivates another seller's active
+ * ownership row and never silently inserts a second owner.
  */
 
 export type OwnershipTx = Prisma.TransactionClient | typeof prisma;
@@ -21,7 +28,9 @@ export type OwnershipTx = Prisma.TransactionClient | typeof prisma;
 export type PhoneOwnershipErrorCode =
   | "UNKNOWN_PHONE_NUMBER"
   | "AMBIGUOUS_PHONE_OWNERSHIP"
-  | "OWNER_CONNECTION_INACTIVE";
+  | "OWNER_CONNECTION_INACTIVE"
+  | "PHONE_OWNERSHIP_CONFLICT"
+  | "PHONE_NOT_OWNED_BY_SELLER";
 
 export class PhoneOwnershipError extends Error {
   constructor(
@@ -164,8 +173,9 @@ export const buildBackfillPlan = (
 };
 
 /*
- * Per-phone-number transaction lock shared by webhook processing
- * and ownership transfer. pg_advisory_xact_lock is held until the
+ * Per-phone-number transaction lock shared by webhook processing,
+ * ownership transfer, OAuth ownership sync, and outbound send
+ * verification. pg_advisory_xact_lock is held until the
  * surrounding transaction commits or rolls back, so a webhook that
  * resolves ownership cannot race a concurrent transfer: whichever
  * takes the lock first finishes its ENTIRE durable write before
@@ -250,11 +260,30 @@ export const resolveActiveOwner = async (
 /*
  * Align the ownership rows of a connection with the phone numbers
  * its CURRENT metadata claims (used after OAuth connect/refresh).
- * For each claimed number: deactivate any other active row and
- * upsert this connection as the single active owner. Claimed
- * numbers that disappear from metadata are deactivated for this
- * connection. All inside the caller's transaction — a partial
- * unique index violation aborts rather than creating duplicates.
+ *
+ * SECURITY INVARIANT (audit finding H-3): a reconnect can only
+ * (re)activate ownership rows for phone numbers that are NOT
+ * actively owned by a DIFFERENT connection. If any claimed number
+ * is actively owned by another connection — whether it belongs to
+ * another seller OR to the same seller — the whole sync aborts
+ * with PhoneOwnershipError("PHONE_OWNERSHIP_CONFLICT") and the
+ * caller's transaction rolls back. The existing owner's mapping
+ * is never weakened, and no second active owner can be created.
+ * Legitimate cross-seller moves must go through the
+ * administrative transfer workflow.
+ *
+ * Locking: the advisory locks for every involved phone number
+ * (newly claimed numbers AND this connection's previously active
+ * numbers) are acquired FIRST, in deterministic sorted order, and
+ * ownership is re-read AFTER the locks — a pre-lock ownership
+ * lookup is never trusted. This makes the sync mutually excluded
+ * with concurrent webhooks, disconnects, transfers, and other
+ * reconnects on the same numbers.
+ *
+ * Cleanup of numbers that disappeared from this connection's
+ * metadata only ever deactivates THIS connection's own rows,
+ * scoped by connectionId, so it can never weaken another
+ * connection's ownership.
  */
 export const syncConnectionOwnership = async (
   tx: OwnershipTx,
@@ -265,18 +294,71 @@ export const syncConnectionOwnership = async (
   },
   wabaId: string | null
 ): Promise<void> => {
-  const phoneIds = extractPhoneNumberIds(connection.metadata);
+  const claimedIds = extractPhoneNumberIds(connection.metadata);
 
-  for (const phoneNumberId of phoneIds) {
-    await tx.whatsAppPhoneOwnership.updateMany({
-      where: {
-        phoneNumberId,
-        isActive: true,
-        connectionId: { not: connection.id },
-      },
-      data: { isActive: false },
-    });
+  /*
+   * Lock every phone number involved in this sync: the newly
+   * claimed numbers plus this connection's currently active
+   * numbers (which may need cleanup). Deterministic sorted order
+   * prevents deadlocks between concurrent syncs.
+   */
+  const previouslyActiveRows = await tx.whatsAppPhoneOwnership.findMany({
+    where: {
+      connectionId: connection.id,
+      isActive: true,
+    },
+    select: {
+      phoneNumberId: true,
+    },
+  });
 
+  const lockIds = [
+    ...new Set([
+      ...claimedIds,
+      ...previouslyActiveRows.map((row) => row.phoneNumberId),
+    ]),
+  ].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+  for (const phoneNumberId of lockIds) {
+    await acquirePhoneNumberLock(tx, phoneNumberId);
+  }
+
+  /*
+   * Re-read the CURRENT active owners of every claimed number
+   * AFTER the locks are held. Any active row belonging to a
+   * different connection is a conflict — including one that
+   * belongs to the same seller (no implicit same-seller
+   * reconciliation policy exists; the administrative transfer
+   * workflow is the only ownership-changing path).
+   */
+  const activeOwnerRows = await tx.whatsAppPhoneOwnership.findMany({
+    where: {
+      phoneNumberId: { in: claimedIds },
+      isActive: true,
+    },
+    select: {
+      phoneNumberId: true,
+      connectionId: true,
+      sellerId: true,
+    },
+    orderBy: {
+      connectionId: "asc",
+    },
+  });
+
+  for (const row of activeOwnerRows) {
+    if (row.connectionId === connection.id) {
+      // Our own row: reactivating it below is safe.
+      continue;
+    }
+
+    throw new PhoneOwnershipError(
+      "PHONE_OWNERSHIP_CONFLICT",
+      `WhatsApp phone number ${row.phoneNumberId} is actively owned by connection ${row.connectionId} (seller ${row.sellerId}); reconnect rejected — use the administrative transfer workflow`
+    );
+  }
+
+  for (const phoneNumberId of claimedIds) {
     const existing = await tx.whatsAppPhoneOwnership.findFirst({
       where: {
         phoneNumberId,
@@ -303,14 +385,75 @@ export const syncConnectionOwnership = async (
     }
   }
 
-  await tx.whatsAppPhoneOwnership.updateMany({
-    where: {
-      connectionId: connection.id,
-      isActive: true,
-      phoneNumberId: { notIn: phoneIds },
-    },
-    data: { isActive: false },
-  });
+  /*
+   * Deactivate this connection's own rows for numbers that are
+   * no longer claimed. Scoped strictly to this connectionId —
+   * another connection's ownership is never touched.
+   */
+  if (claimedIds.length > 0) {
+    await tx.whatsAppPhoneOwnership.updateMany({
+      where: {
+        connectionId: connection.id,
+        isActive: true,
+        phoneNumberId: { notIn: claimedIds },
+      },
+      data: { isActive: false },
+    });
+  } else {
+    await tx.whatsAppPhoneOwnership.updateMany({
+      where: {
+        connectionId: connection.id,
+        isActive: true,
+      },
+      data: { isActive: false },
+    });
+  }
+};
+
+/*
+ * Outbound-send ownership guard (audit finding H-3).
+ *
+ * Verifies — under the same per-phone advisory lock used by
+ * webhooks, transfers, and OAuth sync — that the phone number is
+ * actively owned by EXACTLY the requesting seller's connection
+ * before any message is submitted to Meta. Re-reads ownership
+ * after acquiring the lock, so a stale pre-lock lookup cannot
+ * authorize a send.
+ *
+ * Throws:
+ *   - UNKNOWN_PHONE_NUMBER / AMBIGUOUS_PHONE_OWNERSHIP /
+ *     OWNER_CONNECTION_INACTIVE via resolveActiveOwner
+ *   - PHONE_NOT_OWNED_BY_SELLER when the active owner is a
+ *     different seller or a different connection than the one
+ *     whose credential will be used.
+ */
+export const assertOwnedPhoneNumberForSend = async (
+  tx: OwnershipTx,
+  params: {
+    sellerId: number;
+    connectionId: number;
+    phoneNumberId: string;
+  }
+): Promise<ResolvedOwner> => {
+  await acquirePhoneNumberLock(tx, params.phoneNumberId);
+
+  const owner = await resolveActiveOwner(tx, params.phoneNumberId);
+
+  if (owner.sellerId !== params.sellerId) {
+    throw new PhoneOwnershipError(
+      "PHONE_NOT_OWNED_BY_SELLER",
+      `WhatsApp phone number ${params.phoneNumberId} is actively owned by another seller`
+    );
+  }
+
+  if (owner.connectionId !== params.connectionId) {
+    throw new PhoneOwnershipError(
+      "PHONE_NOT_OWNED_BY_SELLER",
+      `WhatsApp phone number ${params.phoneNumberId} is actively owned by a different connection`
+    );
+  }
+
+  return owner;
 };
 
 /*
