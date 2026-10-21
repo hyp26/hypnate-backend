@@ -316,7 +316,7 @@ export const wabaIdsAgree = (
 export const validateEvictionConversationIds = (
   ids: unknown,
   expectedConversationCount: number
-): number[] | null {
+): number[] | null => {
   if (!Array.isArray(ids)) {
     return null;
   }
@@ -1472,3 +1472,4 @@ export const applyTransfer = async (input: {
     evictedSockets,
   };
 };
+
