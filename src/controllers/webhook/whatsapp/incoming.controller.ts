@@ -11,7 +11,7 @@ import {
   PhoneOwnershipError,
   resolveActiveOwner,
 } from "../../../services/whatsappOwnership.service";
-import { emitToConversationRoom } from "../../../services/conversationRealtime.service";
+import { emitAuthorizedConversationEvents } from "../../../services/conversationRealtime.service";
 
 const getCustomerName = (
   contacts: unknown,
@@ -396,47 +396,58 @@ export const receiveMessage = async (
 
     if (io) {
       for (const item of processed) {
-        io.to(
-          `seller_${item.conversation.sellerId}`
-        ).emit("conversation_updated", {
-          conversationId: item.conversation.id,
-          conversation: item.conversation,
-        });
-
         /*
-         * Tenant-safe room emission: only sockets of the
-         * conversation's CURRENT owner receive room events, so
-         * stale membership (e.g. after an ownership transfer)
-         * cannot expose messages across sellers.
+         * H-1: the seller authorized to receive these events is
+         * resolved at EMISSION time, under the per-phone advisory
+         * lock, from the authoritative ownership mapping — never
+         * from item.conversation.sellerId, which was captured
+         * before this webhook transaction committed and may be
+         * stale after a concurrent ownership transfer. The
+         * conversation payload is refreshed under the lock, so a
+         * pre-transfer conversation snapshot is never broadcast.
+         * Authorization failure fails closed: no emission.
          */
-        await emitToConversationRoom(
+        await emitAuthorizedConversationEvents(
           io,
           item.conversation.id,
-          item.conversation.sellerId,
-          "new_message",
-          item.message
+          [
+            {
+              event: "conversation_updated",
+              payload: {
+                conversationId: item.conversation.id,
+                conversation: null,
+              },
+              toSellerRoom: true,
+              refreshConversationInPayload: true,
+            },
+            {
+              event: "new_message",
+              payload: item.message,
+            },
+          ]
         );
       }
 
       for (const item of statusProcessed) {
-        io.to(
-          `seller_${item.conversation.sellerId}`
-        ).emit("message_status_updated", {
-          conversationId: item.conversation.id,
-          messageId: item.message.id,
-          status: item.message.status,
-        });
-
-        await emitToConversationRoom(
+        /*
+         * H-1: same emission-time authorization for status
+         * events — item.conversation.sellerId is never trusted
+         * as the delivery target.
+         */
+        await emitAuthorizedConversationEvents(
           io,
           item.conversation.id,
-          item.conversation.sellerId,
-          "message_status_updated",
-          {
-            conversationId: item.conversation.id,
-            messageId: item.message.id,
-            status: item.message.status,
-          }
+          [
+            {
+              event: "message_status_updated",
+              payload: {
+                conversationId: item.conversation.id,
+                messageId: item.message.id,
+                status: item.message.status,
+              },
+              toSellerRoom: true,
+            },
+          ]
         );
       }
     }

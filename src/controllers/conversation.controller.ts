@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import prisma from "../prisma/client";
 import { getSellerId } from "../services/seller.service";
 import { sendMessage as sendPlatformMessage } from "../services/messaging/messaging.service";
-import { emitToConversationRoom } from "../services/conversationRealtime.service";
+import { emitAuthorizedConversationEvents } from "../services/conversationRealtime.service";
 import { logger } from "../utils/logger";
 
 // ─────────────────────────────────────────────
@@ -276,15 +276,23 @@ export const updateConversationStatus = async (
 
     // IMPORTANT:
     // Never broadcast tenant data globally.
-    // Only notify sockets belonging to this seller.
+    // H-1: emission is authorized against the conversation's
+    // CURRENT owner (resolved under the per-phone advisory lock
+    // for WhatsApp), not against this request's sellerId, which
+    // could be stale after a concurrent ownership transfer.
+    // Authorization failure fails closed: no emission.
     if (io) {
-      io.to(`seller_${sellerId}`).emit(
-        "conversation_updated",
+      await emitAuthorizedConversationEvents(io, id, [
         {
-          conversationId: updated.id,
-          conversation: updated,
-        }
-      );
+          event: "conversation_updated",
+          payload: {
+            conversationId: updated.id,
+            conversation: null,
+          },
+          toSellerRoom: true,
+          refreshConversationInPayload: true,
+        },
+      ]);
     }
 
     return res.json(updated);
@@ -384,13 +392,27 @@ export const getMessages = async (
 
     const io = req.app.get("io");
 
+    // H-1: emission is authorized against the conversation's
+    // CURRENT owner under the phone-number lock; a concurrent
+    // transfer between the seller-scoped write above and this
+    // emission cannot leak the conversation payload to the
+    // previous seller. Fail closed: no emission on
+    // authorization failure.
     if (io && refreshedConversation) {
-      io.to(`seller_${sellerId}`).emit(
-        "conversation_updated",
-        {
-          conversationId: refreshedConversation.id,
-          conversation: refreshedConversation,
-        }
+      await emitAuthorizedConversationEvents(
+        io,
+        refreshedConversation.id,
+        [
+          {
+            event: "conversation_updated",
+            payload: {
+              conversationId: refreshedConversation.id,
+              conversation: null,
+            },
+            toSellerRoom: true,
+            refreshConversationInPayload: true,
+          },
+        ]
       );
     }
 
@@ -543,29 +565,31 @@ export const sendMessage = async (
     const io = req.app.get("io");
 
     if (io && updatedConversation) {
-      io.to(`seller_${sellerId}`).emit(
-        "conversation_updated",
-        {
-          conversationId: updatedConversation.id,
-          conversation: updatedConversation,
-        }
-      );
-
       /*
-       * Tenant-safe room emission: only sockets of the
-       * conversation's CURRENT owner (verified above via the
-       * seller-scoped lookup) receive the room event, so stale
-       * room membership — e.g. an old seller's socket still
-       * joined after an ownership transfer — cannot receive
-       * messages from another tenant.
+       * H-1: authorize both emissions against the conversation's
+       * CURRENT owner, resolved at emission time under the shared
+       * per-phone advisory lock. The seller-scoped lookup above ran
+       * before the emission and may be stale if a concurrent
+       * ownership transfer committed in between; the helper fails
+       * closed (emits nothing) in that case. The conversation
+       * payload is refreshed under the lock so a pre-transfer
+       * snapshot is never broadcast.
        */
-      await emitToConversationRoom(
-        io,
-        conversation.id,
-        sellerId,
-        "new_message",
-        message
-      );
+      await emitAuthorizedConversationEvents(io, conversation.id, [
+        {
+          event: "conversation_updated",
+          payload: {
+            conversationId: updatedConversation.id,
+            conversation: null,
+          },
+          toSellerRoom: true,
+          refreshConversationInPayload: true,
+        },
+        {
+          event: "new_message",
+          payload: message,
+        },
+      ]);
     }
 
     return res.json(message);
