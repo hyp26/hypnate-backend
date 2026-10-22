@@ -180,12 +180,18 @@ export const buildBackfillPlan = (
  * resolves ownership cannot race a concurrent transfer: whichever
  * takes the lock first finishes its ENTIRE durable write before
  * the other may proceed.
+ *
+ * NOTE: the lock function returns PostgreSQL `void`, so it MUST be
+ * executed via $executeRaw (raw execution, no result rows).
+ * $queryRaw tries to DESERIALIZE the empty void result and fails
+ * with PrismaClientKnownRequestError "Failed to deserialize column
+ * of type 'void'" at runtime on PostgreSQL.
  */
 export const acquirePhoneNumberLock = async (
   tx: OwnershipTx,
   phoneNumberId: string
 ): Promise<void> => {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${phoneNumberId}))`;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${phoneNumberId}))`;
 };
 
 /*
