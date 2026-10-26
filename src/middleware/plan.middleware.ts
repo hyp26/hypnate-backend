@@ -22,18 +22,28 @@ const PLAN_NAMES: Record<PlanId, string> = {
  * without Prisma's client-thenable return type.
  */
 export interface SellerPlanAccessRow {
+  status: string | null;
   activePlan: string | null;
   planStatus: string | null;
   planCurrentPeriodEnd: Date | null;
   planActivatedAt: Date | null;
   trialPlan: string | null;
   trialEndsAt: Date | null;
+  freeAccessGrant: {
+    plan: string;
+    expiresAt: Date | null;
+    revokedAt: Date | null;
+  } | null;
 }
 
 /**
  * Loads the seller-scoped billing row used for the entitlement
  * decision. prisma.seller.findUnique satisfies this type because
  * PrismaPromise<T> extends Promise<T>.
+ *
+ * The active SUPER_ADMIN free-access grant is loaded together
+ * with the billing fields so getPlanAccess sees the same
+ * effective entitlement as the billing-status endpoint.
  */
 export type LoadSeller = (sellerId: number) => Promise<SellerPlanAccessRow | null>;
 
@@ -41,14 +51,24 @@ const defaultLoadSeller: LoadSeller = (sellerId) =>
   prisma.seller.findUnique({
     where: { id: sellerId },
     select: {
+      status: true,
       activePlan: true,
       planStatus: true,
       planCurrentPeriodEnd: true,
       planActivatedAt: true,
       trialPlan: true,
       trialEndsAt: true,
+      freeAccessGrants: {
+        where: { revokedAt: null },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { plan: true, expiresAt: true, revokedAt: true },
+      },
     },
-  });
+  }).then((seller) => ({
+    ...seller,
+    freeAccessGrant: seller?.freeAccessGrants?.[0] ?? null,
+  })) as Promise<SellerPlanAccessRow | null>;
 
 /**
  * Optional dependency overrides, used by unit tests to stub the
@@ -65,7 +85,7 @@ export interface RequirePlanFeatureDeps {
  * The access decision is delegated to getPlanAccess() (the same
  * authoritative rules used by the billing-status endpoint), so the
  * middleware and the billing status can never disagree about
- * PENDING / CANCELLED / trial states.
+ * PENDING / CANCELLED / trial / admin-grant states.
  */
 export const requirePlanFeature =
   (feature: PlanFeature, deps: RequirePlanFeatureDeps = {}) =>

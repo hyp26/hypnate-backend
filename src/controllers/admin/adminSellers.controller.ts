@@ -3,6 +3,7 @@ import prisma from "../../prisma/client";
 import { AdminAuthRequest } from "../../middleware/adminAuth.middleware";
 import { listSellersSchema, updateSellerStatusSchema } from "../../schemas/admin.schemas";
 import { recordAudit } from "../../services/adminAudit.service";
+import { getPlanAccess } from "../../services/billing.service";
 
 /* ----------------------------------------------------
    HELPERS
@@ -46,6 +47,13 @@ const serializeSeller = (
     billingCycle: string | null;
     onboardedAt: Date | null;
     createdAt: Date;
+    freeAccessGrants: {
+      id: number;
+      plan: string;
+      expiresAt: Date | null;
+      reason: string;
+      createdAt: Date;
+    }[];
     users: {
       email: string;
       name: string;
@@ -61,6 +69,18 @@ const serializeSeller = (
 
   const nameParts = (owner?.name ?? "").trim().split(/\s+/);
 
+  // Effective entitlement: the same authoritative decision
+  // (getPlanAccess) used by the plan middleware and the
+  // billing-status endpoint. `plan` reflects the plan the
+  // account can actually use right now; `accessSource` says
+  // whether it comes from a paid subscription, a SUPER_ADMIN
+  // free-access grant, or the trial.
+  const activeGrant = seller.freeAccessGrants[0] ?? null;
+  const access = getPlanAccess({
+    ...seller,
+    freeAccessGrant: activeGrant,
+  });
+
   return {
     id: seller.id,
     email: owner?.email ?? "",
@@ -69,7 +89,16 @@ const serializeSeller = (
     lastName: nameParts.slice(1).join(" "),
     status: deriveStatus(seller),
     phone: seller.phone ?? undefined,
-    plan: seller.activePlan ?? seller.trialPlan ?? "FREE",
+    plan: access.plan ?? "FREE",
+    accessSource: access.source,
+    adminGrant: activeGrant
+      ? {
+          id: activeGrant.id,
+          plan: activeGrant.plan,
+          expiresAt: activeGrant.expiresAt,
+          grantedAt: activeGrant.createdAt,
+        }
+      : null,
     subscriptionStatus: seller.planStatus ?? undefined,
     trialStart: seller.trialStartedAt?.toISOString() ?? undefined,
     trialEndsAt: seller.trialEndsAt?.toISOString() ?? undefined,
@@ -155,6 +184,18 @@ export const listSellers = async (
           billingCycle: true,
           onboardedAt: true,
           createdAt: true,
+          freeAccessGrants: {
+            where: { revokedAt: null },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: {
+              id: true,
+              plan: true,
+              expiresAt: true,
+              reason: true,
+              createdAt: true,
+            },
+          },
           users: {
             take: 1,
             orderBy: { createdAt: "asc" },
@@ -264,6 +305,18 @@ export const getSeller = async (
         billingCycle: true,
         onboardedAt: true,
         createdAt: true,
+        freeAccessGrants: {
+          where: { revokedAt: null },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: {
+            id: true,
+            plan: true,
+            expiresAt: true,
+            reason: true,
+            createdAt: true,
+          },
+        },
         users: {
           select: { id: true, email: true, name: true, createdAt: true },
         },
@@ -274,6 +327,14 @@ export const getSeller = async (
       res.status(404).json({ message: "Seller not found" });
       return;
     }
+
+    // Effective entitlement for the detail view: same
+    // authoritative decision as the list response.
+    const activeGrant = seller.freeAccessGrants[0] ?? null;
+    const access = getPlanAccess({
+      ...seller,
+      freeAccessGrant: activeGrant,
+    });
 
     const [revenueAgg, orderCount, productCount, customerCount, recentOrders] =
       await Promise.all([
@@ -302,6 +363,18 @@ export const getSeller = async (
     res.json({
       seller: {
         ...seller,
+        // Effective access summary (paid | admin_grant | trial | null).
+        effectivePlan: access.plan,
+        accessSource: access.source,
+        adminGrant: activeGrant
+          ? {
+              id: activeGrant.id,
+              plan: activeGrant.plan,
+              expiresAt: activeGrant.expiresAt,
+              reason: activeGrant.reason,
+              grantedAt: activeGrant.createdAt,
+            }
+          : null,
         metrics: {
           totalRevenue: Math.round(revenueAgg._sum.totalAmount ?? 0),
           totalOrders: orderCount,

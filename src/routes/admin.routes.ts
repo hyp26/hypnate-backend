@@ -26,6 +26,11 @@ import {
   getSeller,
   updateSellerStatus,
 } from "../controllers/admin/adminSellers.controller";
+import {
+  grantFreeAccess,
+  updateFreeAccess,
+  revokeFreeAccess,
+} from "../controllers/admin/adminFreeAccess.controller";
 import { listCustomers } from "../controllers/admin/adminCustomers.controller";
 import {
   listOrders,
@@ -168,6 +173,41 @@ router.patch(
   ...guard,
   requireAdminRoles("SUPER_ADMIN", "ADMIN") as RequestHandler,
   adminHandler(updateSellerStatus)
+);
+
+/* ----------------------------------------------------
+   SELLER FREE-ACCESS GRANTS (SUPER_ADMIN only)
+---------------------------------------------------- */
+
+/*
+ * Administrative free-access grants: a SUPER_ADMIN may provide
+ * any plan's capabilities to a seller for free, including
+ * after the 7-day trial has expired. Every mutating endpoint
+ * is restricted to SUPER_ADMIN — ADMIN and SUPPORT users are
+ * rejected with 403 by requireAdminRoles, independently of any
+ * frontend gating.
+ */
+const superAdminOnly = requireAdminRoles("SUPER_ADMIN") as RequestHandler;
+
+router.post(
+  "/sellers/:id/free-access",
+  ...guard,
+  superAdminOnly,
+  adminHandler(grantFreeAccess)
+);
+
+router.patch(
+  "/sellers/:id/free-access",
+  ...guard,
+  superAdminOnly,
+  adminHandler(updateFreeAccess)
+);
+
+router.delete(
+  "/sellers/:id/free-access",
+  ...guard,
+  superAdminOnly,
+  adminHandler(revokeFreeAccess)
 );
 
 /* ----------------------------------------------------
