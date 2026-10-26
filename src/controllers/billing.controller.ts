@@ -23,9 +23,26 @@ export const getBillingStatus = async (
     ({ 
         message: "Seller account required" 
     });
+    // The active SUPER_ADMIN free-access grant is loaded with
+    // the billing row so the effective entitlement below is the
+    // same decision used by plan middleware.
     const seller = await prisma.seller.findUnique
     ({ 
-        where: { id: sellerId } 
+        where: { id: sellerId },
+        include: {
+          freeAccessGrants: {
+            where: { revokedAt: null },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: {
+              id: true,
+              plan: true,
+              expiresAt: true,
+              reason: true,
+              createdAt: true,
+            },
+          },
+        },
     }); 
     
     if (!seller) return res.status(404).json
@@ -33,11 +50,28 @@ export const getBillingStatus = async (
         message: "Seller not found" 
     });
 
-    const access = getPlanAccess(seller);
+    const activeGrant = seller.freeAccessGrants[0] ?? null;
+    const access = getPlanAccess({ ...seller, freeAccessGrant: activeGrant });
+
     return res.json
     
     ({ 
         access, 
+        // Effective entitlement summary: the same source of truth
+        // as access (paid | admin_grant | trial | null).
+        effectivePlan: access.plan,
+        accessSource: access.source,
+        // Administrative free-access grant (never a paid
+        // subscription). Null when no active grant exists.
+        adminGrant: activeGrant
+          ? {
+              id: activeGrant.id,
+              plan: activeGrant.plan,
+              expiresAt: activeGrant.expiresAt,
+              reason: activeGrant.reason,
+              grantedAt: activeGrant.createdAt,
+            }
+          : null,
         selectedPlan: seller.selectedPlan, 
         trialPlan: seller.trialPlan, 
         trialStartedAt: seller.trialStartedAt, 
@@ -112,7 +146,7 @@ export const createBillingSubscription = async (
   } 
   catch (e) 
   { 
-    next(e); 
+    next(e);
 }
 };
 
@@ -132,17 +166,17 @@ export const verifyBillingPayment = async (
             razorpay_signature: signature } = req.body || {};
 
     if (!paymentId || !subscriptionId || !signature) 
-        return res.status(400).json({ message: "Razorpay verification data is incomplete" });
+      return res.status(400).json({ message: "Razorpay verification data is incomplete" });
 
     const seller = await prisma.seller.findUnique({ where: { id: sellerId } });
 
     if (!seller || seller.razorpaySubscriptionId !== subscriptionId) 
-        return res.status(403).json({ message: "Subscription does not belong to this account" });
+      return res.status(403).json({ message: "Subscription does not belong to this account" });
 
     if (!verifySubscriptionSignature({ 
         subscriptionId, 
         paymentId, 
-        signature 
+        signature, 
     })
     ) 
     
@@ -155,7 +189,7 @@ export const verifyBillingPayment = async (
   } 
   catch (e) 
   { 
-    next(e); 
+    next(e);
 }
 };
 
@@ -187,11 +221,11 @@ export const razorpayWebhook = async (
 
     else if (event === "subscription.pending") 
       await prisma.seller.updateMany
-    ({ 
-      where: { 
-        razorpaySubscriptionId: subscriptionId }, 
-        data: { planStatus: "PENDING" } 
-      });
+      ({ 
+        where: { 
+          razorpaySubscriptionId: subscriptionId }, 
+          data: { planStatus: "PENDING" } 
+        });
 
     else if ([
       "subscription.cancelled", 
@@ -206,7 +240,7 @@ export const razorpayWebhook = async (
 
     return res.status(200).json
     ({ 
-      received: true 
+        received: true 
     });
   } 
   catch (e) 

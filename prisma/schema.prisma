@@ -177,6 +177,66 @@ model Seller {
   channels        ChannelConnection[]
   quickReplies    QuickReply[] // FIX: added missing back-relation
   phoneOwnerships WhatsAppPhoneOwnership[]
+  freeAccessGrants SellerFreeAccessGrant[]
+}
+
+// ─────────────────────────────────────────────
+// SUPER-ADMIN FREE ACCESS GRANTS
+// ─────────────────────────────────────────────
+
+// Administrative free-access grants awarded by a SUPER_ADMIN.
+//
+// A grant provides the selected plan's capabilities WITHOUT
+// payment, including after the 7-day trial expires. It is a
+// completely separate source of entitlement from the paid
+// subscription fields on Seller: granting never touches
+// activePlan / planStatus / planActivatedAt /
+// planCurrentPeriodEnd / razorpaySubscriptionId or any trial
+// field, and never creates Razorpay artifacts.
+//
+// DATABASE INVARIANT: at most ONE active (revokedAt IS NULL)
+// grant row exists per seller. This is enforced by the partial
+// unique index "SellerFreeAccessGrant_sellerId_active_key",
+// which Prisma CANNOT express on the model — the SQL migration
+// 20261026120000_add_seller_free_access_grant is AUTHORITATIVE
+// for it.
+//
+// WARNING: do NOT run `prisma db push` against a deployed
+// database with this schema — it can DROP the partial unique
+// index (and other SQL-only invariants) because they are not
+// representable in the Prisma model. Use `prisma migrate deploy`.
+//
+// Revoked and expired rows are retained for audit history.
+// An expired/revoked grant stops granting access immediately,
+// evaluated against server time by getPlanAccess().
+
+model SellerFreeAccessGrant {
+  id        Int      @id @default(autoincrement())
+
+  sellerId  Int
+  seller    Seller   @relation(fields: [sellerId], references: [id])
+
+  // starter | pro | business
+  plan      String
+
+  // Null = indefinite until revoked.
+  expiresAt DateTime?
+
+  // Required justification, captured for the audit trail.
+  reason    String
+
+  grantedByAdminId Int
+  grantedBy        AdminUser @relation("FreeAccessGrantor", fields: [grantedByAdminId], references: [id])
+
+  revokedAt        DateTime?
+  revokedByAdminId Int?
+  revokedBy        AdminUser? @relation("FreeAccessRevoker", fields: [revokedByAdminId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sellerId])
+  @@index([grantedByAdminId])
 }
 
 // ─────────────────────────────────────────────
@@ -362,7 +422,7 @@ model Conversation {
 // ─────────────────────────────────────────────
 
 model Label {
-  id   Int    @id @default(autoincrement())
+  id   Int    @id
   name String @unique
 
   conversations Conversation[]
@@ -412,7 +472,7 @@ model Message {
 // ─────────────────────────────────────────────
 
 model QuickReply {
-  id Int @id @default(autoincrement())
+  id   Int    @id @default(autoincrement())
 
   sellerId Int
   // FIX: relation args were split with misplaced parentheses
@@ -524,10 +584,6 @@ model Order {
 
   createdAt DateTime       @default(now())
   products  ProductOrder[]
-
-  @@index([sellerId])
-  @@index([customerId])
-  @@index([status])
 }
 
 model Product {
@@ -575,7 +631,7 @@ model Upload {
   seller   Seller @relation(fields: [sellerId], references: [id])
 
   filename String
-  url      String
+  url String
 
   createdAt DateTime @default(now())
 }
@@ -682,7 +738,7 @@ model BuildJob {
   buildLog    Json?
 
   startedAt   DateTime?
-  completedAt DateTime?
+  completedAt  DateTime?
 
   createdAt DateTime @default(now())
 
@@ -821,10 +877,12 @@ model AdminUser {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sessions        AdminSession[]
-  auditLogs       AuditLog[]
-  assignedTickets SupportTicket[] @relation("TicketAssignee")
-  ticketMessages  TicketMessage[] @relation("TicketMessageAuthor")
+  sessions          AdminSession[]
+  auditLogs         AuditLog[]
+  assignedTickets   SupportTicket[] @relation("TicketAssignee")
+  ticketMessages    TicketMessage[] @relation("TicketMessageAuthor")
+  freeAccessGrantsGranted SellerFreeAccessGrant[] @relation("FreeAccessGrantor")
+  freeAccessGrantsRevoked SellerFreeAccessGrant[] @relation("FreeAccessRevoker")
 }
 
 // Persisted admin refresh sessions. Only the SHA-256 hash
@@ -851,7 +909,7 @@ model SupportTicket {
   id           Int            @id @default(autoincrement())
   ticketNumber String         @unique
   subject      String
-  description  String?        @db.Text
+  description String?         @db.Text
   status       TicketStatus   @default(OPEN)
   priority     TicketPriority @default(MEDIUM)
   category     String?
@@ -916,7 +974,7 @@ model Announcement {
 model FAQItem {
   id       Int    @id @default(autoincrement())
   question String
-  answer   String @db.Text
+  answer   String
 
   category String   @default("General")
   tags     String[]
@@ -937,7 +995,7 @@ model ContentPage {
   id    Int    @id @default(autoincrement())
   slug  String @unique
   title String
-  body  String @db.Text
+  body  String
 
   status ContentStatus @default(DRAFT)
 
@@ -973,8 +1031,8 @@ model AuditLog {
 
 // Key/value store for admin panel settings and feature flags.
 model AdminSetting {
-  id    Int    @id @default(autoincrement())
-  key   String @unique
+  id    Int     @id @default(autoincrement())
+  key   String  @unique
   value Json
 
   updatedAt DateTime @updatedAt

@@ -7,8 +7,53 @@ const API = "https://api.razorpay.com/v1";
 export const TRIAL_DAYS = 7;
 export const getTrialEndDate = (start: Date) => new Date(start.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
 
+/**
+ * The active administrative free-access grant row shape consumed
+ * by getPlanAccess. Callers load the seller with its grant
+ * relation included (see plan.middleware / billing.controller).
+ */
+export interface FreeAccessGrantAccessRow {
+  plan: string;
+  expiresAt: Date | string | null;
+  revokedAt: Date | string | null;
+}
+
+/**
+ * Returns the seller's active (non-revoked) free-access grant,
+ * or null. Expiry is evaluated by the caller against server
+ * time so an expired grant never requires a cron job to stop
+ * working.
+ */
+export function getActiveFreeAccessGrant(
+  seller: {
+    freeAccessGrant?: FreeAccessGrantAccessRow | null;
+    freeAccessGrants?: FreeAccessGrantAccessRow[] | null;
+  } | null | undefined
+): (FreeAccessGrantAccessRow & { expiresAt: Date | null }) | null {
+  const grant = seller?.freeAccessGrant ?? seller?.freeAccessGrants?.[0] ?? null;
+
+  if (!grant || grant.revokedAt) {
+    return null;
+  }
+
+  return {
+    plan: grant.plan,
+    expiresAt: grant.expiresAt ? new Date(grant.expiresAt) : null,
+    revokedAt: null,
+  };
+}
+
 export function getPlanAccess(seller: any) {
   const now = new Date();
+
+  // A blocked seller account never gains access through any
+  // entitlement source — including an administrative
+  // free-access grant. Fail closed.
+  const sellerStatus = String(seller?.status || "").toUpperCase();
+  if (sellerStatus === "SUSPENDED" || sellerStatus === "INACTIVE") {
+    return { hasAccess: false, source: null, plan: null, status: sellerStatus, trialEndsAt: null, planCurrentPeriodEnd: null };
+  }
+
   const activePlan = normalizePlan(seller?.activePlan);
   const status = String(seller?.planStatus || "").toUpperCase();
   const periodEnd = seller?.planCurrentPeriodEnd ? new Date(seller.planCurrentPeriodEnd) : null;
@@ -22,7 +67,23 @@ export function getPlanAccess(seller: any) {
     (status === "ACTIVE" && (!periodEnd || periodEnd > now)) ||
     (status === "CANCELLED" && previouslyActivated && !!periodEnd && periodEnd > now)
   );
+  // Rule 1: a valid paid subscription always wins. An
+  // administrative grant must never replace or shadow it.
   if (paidAccess) return { hasAccess: true, source: "paid" as const, plan: activePlan, status, trialEndsAt: null, planCurrentPeriodEnd: periodEnd };
+
+  // Rule 2: an active SUPER_ADMIN free-access grant provides
+  // the granted plan's capabilities without payment, including
+  // after the trial has expired. Expiry is evaluated against
+  // server time (now), so an expired grant stops working
+  // immediately without a scheduled job. A grant never creates
+  // or activates a paid subscription.
+  const grant = getActiveFreeAccessGrant(seller);
+  const grantPlan = grant ? normalizePlan(grant.plan) : null;
+  const grantValid = !!grantPlan && (!grant.expiresAt || grant.expiresAt > now);
+  if (grantValid) {
+    return { hasAccess: true, source: "admin_grant" as const, plan: grantPlan, status: "ADMIN_GRANTED", trialEndsAt: null, planCurrentPeriodEnd: null, adminGrantExpiresAt: grant!.expiresAt };
+  }
+
   const trialPlan = normalizePlan(seller?.trialPlan);
   const trialEndsAt = seller?.trialEndsAt ? new Date(seller.trialEndsAt) : null;
   if (trialPlan && trialEndsAt && trialEndsAt > now) return { hasAccess: true, source: "trial" as const, plan: trialPlan, status: "TRIALING", trialEndsAt, planCurrentPeriodEnd: null };

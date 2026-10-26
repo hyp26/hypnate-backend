@@ -192,7 +192,9 @@ export const updateTicketSchema = z
     status: z
       .enum(["OPEN", "PENDING", "IN_PROGRESS", "RESOLVED", "CLOSED"])
       .optional(),
-    priority: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).optional(),
+    priority: z
+      .enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"])
+      .optional(),
     category: z.string().trim().max(100).optional(),
     tags: z.array(z.string().trim().min(1).max(50)).max(20).optional(),
     assignedToAdminId: z.coerce.number().int().positive().nullable().optional(),
@@ -319,3 +321,57 @@ export const listAuditLogsSchema = z.object({
       search: z.string().trim().max(200).optional(),
     })
 });
+
+/* ----------------------------------------------------
+   SUPER-ADMIN FREE ACCESS GRANTS
+---------------------------------------------------- */
+
+// Plans a SUPER_ADMIN may grant for free.
+export const freeAccessPlanSchema = z.enum(["starter", "pro", "business"]);
+
+// Required justification, captured in the audit trail.
+export const freeAccessReasonSchema = z
+  .string()
+  .trim()
+  .min(1, "A reason is required")
+  .max(1000, "Reason must be 1000 characters or fewer");
+
+// Optional expiration. Must be a valid FUTURE timestamp when
+// provided; omitting it means the grant is indefinite until
+// revoked.
+const futureExpirationSchema = z
+  .string()
+  .datetime({ offset: true })
+  .refine((value) => new Date(value).getTime() > Date.now(), {
+    message: "Expiration must be a valid future timestamp",
+  });
+
+// POST /api/admin/sellers/:id/free-access
+export const grantFreeAccessSchema = z
+  .object({
+    plan: freeAccessPlanSchema,
+    expiresAt: futureExpirationSchema.optional(),
+    reason: freeAccessReasonSchema,
+  })
+  .strict();
+
+// PATCH /api/admin/sellers/:id/free-access
+// expiresAt may be set to null to make an existing grant
+// indefinite. At least one change is required.
+export const updateFreeAccessSchema = z
+  .object({
+    plan: freeAccessPlanSchema.optional(),
+    expiresAt: futureExpirationSchema.nullable().optional(),
+    reason: freeAccessReasonSchema,
+  })
+  .strict()
+  .refine((data) => data.plan !== undefined || data.expiresAt !== undefined, {
+    message: "At least one of plan or expiresAt is required",
+  });
+
+// DELETE /api/admin/sellers/:id/free-access
+export const revokeFreeAccessSchema = z
+  .object({
+    reason: freeAccessReasonSchema,
+  })
+  .strict();

@@ -10,6 +10,18 @@ type AuditActionValue =
   | "LOGOUT"
   | "SETTINGS";
 
+/**
+ * Minimal structural type accepted as a transaction-scoped
+ * Prisma client. Method parameter positions are bivariant in
+ * TypeScript, so both `prisma` and a `prisma.$transaction` tx
+ * client satisfy this interface.
+ */
+interface AuditLogClient {
+  auditLog: {
+    create(args: unknown): Promise<unknown>;
+  };
+}
+
 interface RecordAuditInput {
   actorId: number | null;
   action: AuditActionValue;
@@ -18,17 +30,29 @@ interface RecordAuditInput {
   oldValue?: unknown;
   newValue?: unknown;
   req?: Request;
+  /**
+   * Optional transaction-scoped client. When supplied, the audit
+   * row is written INSIDE the caller's transaction, so a
+   * privileged change and its audit entry commit (or roll back)
+   * together. Without it, the global client is used and the
+   * write remains fire-and-forget.
+   */
+  tx?: AuditLogClient;
 }
 
 /**
  * Persist an audit trail entry for a privileged admin action.
  *
- * Audit writes must never break the request they describe, so
- * failures are logged and swallowed.
+ * When called without a transaction client, audit writes must
+ * never break the request they describe, so failures are logged
+ * and swallowed. When a `tx` client is supplied, failures
+ * propagate so the enclosing transaction rolls back.
  */
 export const recordAudit = async (input: RecordAuditInput): Promise<void> => {
+  const client: AuditLogClient = input.tx ?? prisma;
+
   try {
-    await prisma.auditLog.create({
+    await client.auditLog.create({
       data: {
         adminUserId: input.actorId ?? null,
         action: input.action,
@@ -46,6 +70,11 @@ export const recordAudit = async (input: RecordAuditInput): Promise<void> => {
       },
     });
   } catch (err) {
+    if (input.tx) {
+      // Inside a caller-supplied transaction: propagate so the
+      // privileged change and its audit entry stay atomic.
+      throw err;
+    }
     logger.error("Failed to write admin audit log", err);
   }
 };
