@@ -12,6 +12,8 @@ interface SellerRow {
   planStatus: string | null;
   planCurrentPeriodEnd: Date | null;
   planActivatedAt: Date | null;
+  status: "ACTIVE" | "PENDING" | "SUSPENDED" | "REJECTED";
+  freeAccessGrant: null;
   trialPlan: string | null;
   trialEndsAt: Date | null;
 }
@@ -68,6 +70,8 @@ describe("requirePlanFeature delegates to getPlanAccess", () => {
         planStatus: "PENDING",
         planCurrentPeriodEnd: daysFromNow(10),
         planActivatedAt: null,
+        status: "ACTIVE",
+        freeAccessGrant: null,
         trialPlan: null,
         trialEndsAt: null,
       },
@@ -86,6 +90,8 @@ describe("requirePlanFeature delegates to getPlanAccess", () => {
         planStatus: "CANCELLED",
         planCurrentPeriodEnd: daysFromNow(10),
         planActivatedAt: null,
+        status: "ACTIVE",
+        freeAccessGrant: null,
         trialPlan: null,
         trialEndsAt: null,
       },
@@ -105,6 +111,8 @@ describe("requirePlanFeature delegates to getPlanAccess", () => {
         planActivatedAt: daysFromNow(-30),
         trialPlan: null,
         trialEndsAt: null,
+        status: "ACTIVE",
+        freeAccessGrant: null,
       },
       "commerceWorkspace",
     );
@@ -125,6 +133,8 @@ describe("requirePlanFeature delegates to getPlanAccess", () => {
         planActivatedAt: daysFromNow(-30),
         trialPlan: null,
         trialEndsAt: null,
+        status: "ACTIVE",
+        freeAccessGrant: null,
       },
       "commerceWorkspace",
     );
@@ -140,6 +150,8 @@ describe("requirePlanFeature delegates to getPlanAccess", () => {
         planActivatedAt: daysFromNow(-1),
         trialPlan: null,
         trialEndsAt: null,
+        status: "ACTIVE",
+        freeAccessGrant: null,
       },
       "advancedAnalytics",
     );
@@ -154,6 +166,8 @@ describe("requirePlanFeature delegates to getPlanAccess", () => {
         planStatus: "ACTIVE",
         planCurrentPeriodEnd: daysFromNow(30),
         planActivatedAt: daysFromNow(-1),
+        status: "ACTIVE",
+        freeAccessGrant: null,
         trialPlan: null,
         trialEndsAt: null,
       },
@@ -182,6 +196,8 @@ describe("requirePlanFeature delegates to getPlanAccess", () => {
         planActivatedAt: daysFromNow(-1),
         trialPlan: null,
         trialEndsAt: null,
+        status: "ACTIVE",
+        freeAccessGrant: null,
       },
       "commerceWorkspace",
     );
@@ -199,6 +215,8 @@ describe("requirePlanFeature delegates to getPlanAccess", () => {
         planActivatedAt: null,
         trialPlan: "starter",
         trialEndsAt: daysFromNow(3),
+        status: "ACTIVE",
+        freeAccessGrant: null,
       },
       "commerceWorkspace",
     );
@@ -214,6 +232,8 @@ describe("requirePlanFeature delegates to getPlanAccess", () => {
         planActivatedAt: null,
         trialPlan: "starter",
         trialEndsAt: daysFromNow(-3),
+        status: "ACTIVE",
+        freeAccessGrant: null,
       },
       "commerceWorkspace",
     );

@@ -79,7 +79,11 @@ export function getPlanAccess(seller: any) {
   // or activates a paid subscription.
   const grant = getActiveFreeAccessGrant(seller);
   const grantPlan = grant ? normalizePlan(grant.plan) : null;
-  const grantValid = !!grantPlan && (!grant.expiresAt || grant.expiresAt > now);
+  const grantValid =
+  grant !== null &&
+  grantPlan !== null &&
+  (!grant.expiresAt || grant.expiresAt > now);
+  
   if (grantValid) {
     return { hasAccess: true, source: "admin_grant" as const, plan: grantPlan, status: "ADMIN_GRANTED", trialEndsAt: null, planCurrentPeriodEnd: null, adminGrantExpiresAt: grant!.expiresAt };
   }
