@@ -332,8 +332,12 @@ const makeOwnershipTx = (
   };
 
   const tx: any = {
-    $queryRaw: (_strings: TemplateStringsArray, ...values: unknown[]) => {
+    $executeRaw: async (
+      _strings: TemplateStringsArray,
+      ...values: unknown[]
+    ) => {
       locks.push(String(values[0]));
+      return 0;
     },
     channelConnection: {
       findFirst: async ({ where }: any) => {
@@ -572,7 +576,7 @@ describe("syncConnectionOwnership", () => {
       "WABA"
     );
 
-    assert.deepEqual(locks, ["a", "b", "999"]);
+    assert.deepEqual(locks, ["999", "a", "b"]);
   });
 
   it("deactivates only its own stale numbers during cleanup and never weakens another connection's ownership", async () => {

@@ -99,7 +99,7 @@ describe(
       const captured: {
         status: number;
         body: Record<string, unknown> | null;
-      } = { status: 0, body: null };
+      } = { status: 200, body: null };
 
       const res = {
         status(code: number) {
