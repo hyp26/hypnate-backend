@@ -37,8 +37,39 @@ export const listThemes = async (
 };
 
 /* ─────────────────────────────────────────────
+   HELPER — check if error is Prisma unique constraint violation
+───────────────────────────────────────────── */
+
+const isPrismaUniqueConflict = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  (error as { code?: string }).code === "P2002";
+
+const getSlugCandidate = (base: string, sellerId: number, attempt: number) => {
+  if (attempt === 0) return base;
+  if (attempt === 1) return `${base}-${sellerId}`;
+  return `${base}-${sellerId}-${attempt - 1}`;
+};
+
+
+
+type StartBuildResult =
+  | {
+      kind: "active";
+      activeJob: { id: number };
+    }
+  | {
+      kind: "created";
+      store: any;
+      buildJob: { id: number };
+      slug: string;
+    };
+
+/* ─────────────────────────────────────────────
    POST /api/hypnate-x/build
 ───────────────────────────────────────────── */
+
 export const startBuild = async (
   req: AuthRequest,
   res: Response,
@@ -49,46 +80,44 @@ export const startBuild = async (
     const sellerId = req.user?.sellerId;
 
     if (!sellerId) {
-      return res.status(400).json({ message: "Seller account required to build a store" });
-    }
-    if (!themeId || !storeName) {
-      return res.status(400).json({ message: "themeId and storeName are required" });
-    }
-    if (storeName.trim().length < 2 || storeName.trim().length > 60) {
-      return res.status(400).json({ message: "Store name must be between 2 and 60 characters" });
+      return res.status(400).json({
+        message: "Seller account required to build a store",
+      });
     }
 
-    // Validate theme
-    const theme = await (prisma as any).theme.findUnique({ where: { id: themeId } });
+    if (!themeId || typeof storeName !== "string") {
+      return res.status(400).json({
+        message: "themeId and storeName are required",
+      });
+    }
+
+    const normalizedName = storeName.trim();
+
+    if (normalizedName.length < 2 || normalizedName.length > 60) {
+      return res.status(400).json({
+        message: "Store name must be between 2 and 60 characters",
+      });
+    }
+
+    const theme = await (prisma as any).theme.findUnique({
+      where: { id: themeId },
+    });
+
     if (!theme) {
       return res.status(404).json({ message: "Theme not found" });
     }
 
-    // Generate unique slug
-    let slug = makeSlug(storeName);
-    const existing = await (prisma as any).store.findUnique({ where: { slug } });
-    if (existing && existing.sellerId !== sellerId) {
-      slug = `${slug}-${sellerId}`;
-    }
-
-    // Block if build already in progress
-    const activeJob = await (prisma as any).buildJob.findFirst({
-      where: {
-        sellerId,
-        status: { notIn: ["DONE", "FAILED"] },
-      },
-    });
-    if (activeJob) {
-      return res.status(409).json({
-        message: "A build is already in progress",
-        jobId: activeJob.id,
-      });
-    }
-
-    // Fetch product catalog (snapshot at build time)
     const products = await prisma.product.findMany({
       where: { sellerId },
-      select: { id: true, name: true, description: true, category: true, price: true, stock: true, imageUrl: true },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        category: true,
+        price: true,
+        stock: true,
+        imageUrl: true,
+      },
       take: 100,
     });
 
@@ -97,48 +126,204 @@ export const startBuild = async (
       select: { businessName: true, phone: true },
     });
 
-    // Upsert Store
-    const store = await (prisma as any).store.upsert({
-      where: { slug },
-      create: { sellerId, themeId, storeName: storeName.trim(), slug, logoUrl: logoUrl || null, status: "BUILDING" },
-      update: { themeId, storeName: storeName.trim(), logoUrl: logoUrl || null, status: "BUILDING", publishedAt: null },
-    });
+    const baseSlug = makeSlug(normalizedName) || `store-${sellerId}`;
 
-    // Create BuildJob
-    const buildJob = await (prisma as any).buildJob.create({
-      data: {
+    let result: StartBuildResult | null = null;
+
+    // Retry unique conflicts caused by concurrent slug allocation.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        result = await (prisma as any).$transaction(
+          async (tx: any): Promise<StartBuildResult> => {
+            // Serialize build creation for the same seller.
+            await tx.$executeRaw`
+              SELECT pg_advisory_xact_lock(
+                1279872594::integer,
+                ${sellerId}::integer
+              )
+            `;
+            const activeJob = await tx.buildJob.findFirst({
+              where: {
+                sellerId,
+                status: { notIn: ["DONE", "FAILED"] },
+              },
+            });
+
+            if (activeJob) {
+              return {
+                kind: "active",
+                activeJob,
+              };
+            }
+
+            let store: any = null;
+            let selectedSlug = "";
+
+            for (let slugAttempt = 0; slugAttempt < 100; slugAttempt++) {
+              const candidate = getSlugCandidate(
+                baseSlug,
+                sellerId,
+                slugAttempt
+              );
+
+              const existing = await tx.store.findUnique({
+                where: { slug: candidate },
+              });
+
+              if (!existing) {
+                store = await tx.store.create({
+                  data: {
+                    sellerId,
+                    themeId,
+                    storeName: normalizedName,
+                    slug: candidate,
+                    logoUrl: logoUrl || null,
+                    status: "BUILDING",
+                  },
+                });
+
+                selectedSlug = candidate;
+                break;
+              }
+
+              // Never update a store owned by another seller.
+              if (existing.sellerId !== sellerId) {
+                continue;
+              }
+
+              const updateResult = await tx.store.updateMany({
+                where: {
+                  id: existing.id,
+                  sellerId,
+                },
+                data: {
+                  themeId,
+                  storeName: normalizedName,
+                  logoUrl: logoUrl || null,
+                  status: "BUILDING",
+                  publishedAt: null,
+                },
+              });
+
+              if (updateResult.count !== 1) {
+                throw new Error(
+                  "Store ownership changed during build creation"
+                );
+              }
+
+              store = await tx.store.findFirst({
+                where: {
+                  id: existing.id,
+                  sellerId,
+                },
+              });
+
+              if (!store) {
+                throw new Error(
+                  "Seller-owned store could not be reloaded"
+                );
+              }
+
+              selectedSlug = candidate;
+              break;
+            }
+
+            if (!store) {
+              throw new Error("Unable to allocate a unique store slug");
+            }
+
+            const buildJob = await tx.buildJob.create({
+              data: {
+                storeId: store.id,
+                sellerId,
+                themeId,
+                storeName: normalizedName,
+                logoUrl: logoUrl || null,
+                status: "QUEUED",
+                currentStep: "Queued — waiting for worker",
+                catalogJson: products,
+                startedAt: new Date(),
+              },
+            });
+
+            return {
+              kind: "created",
+              store,
+              buildJob,
+              slug: selectedSlug,
+            };
+          }
+        );
+
+        // Ensure the transaction returned a result.
+        if (!result) {
+          throw new Error("HypnateX build transaction returned no result");
+        }
+
+        // An active build already exists for this seller.
+        if (result.kind === "active") {
+          return res.status(409).json({
+            message: "A build is already in progress",
+            jobId: result.activeJob.id,
+          });
+        }
+
+        break;
+      } catch (error) {
+        if (isPrismaUniqueConflict(error) && attempt < 4) {
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    if (!result || result.kind !== "created") {
+      throw new Error("Unable to create HypnateX build");
+    }
+
+    const { store, buildJob, slug } = result;
+
+    // Dispatch only after the transaction has committed.
+    // Database-backed tests must not trigger the external Python worker.
+    if (process.env.NODE_ENV !== "test") {
+      triggerPythonWorker(buildJob.id, {
+        jobId: buildJob.id,
         storeId: store.id,
         sellerId,
         themeId,
-        storeName: storeName.trim(),
+        themeName: theme.name,
+        themeCategory: theme.category,
+        storeName: normalizedName,
         logoUrl: logoUrl || null,
-        status: "QUEUED",
-        currentStep: "Queued — waiting for worker",
-        catalogJson: products,
-        startedAt: new Date(),
-      },
-    });
+        slug,
+        products,
+        seller,
+      }).catch((err) => {
+        logger.error(
+          `[HypnateX] Worker trigger failed for job ${buildJob.id}:`,
+          err.message
+        );
 
-    // Fire-and-forget to Python worker
-    triggerPythonWorker(buildJob.id, {
-      jobId: buildJob.id,
-      storeId: store.id,
-      sellerId,
-      themeId,
-      themeName: theme.name,
-      themeCategory: theme.category,
-      storeName: storeName.trim(),
-      logoUrl: logoUrl || null,
-      slug,
-      products,
-      seller,
-    }).catch((err) => {
-      logger.error(`[HypnateX] Worker trigger failed for job ${buildJob.id}:`, err.message);
-      (prisma as any).buildJob.update({
-        where: { id: buildJob.id },
-        data: { status: "FAILED", errorMsg: "Worker service unavailable: " + err.message },
-      }).catch(logger.error);
-    });
+        (prisma as any).buildJob
+          .updateMany({
+            where: {
+              id: buildJob.id,
+              sellerId,
+            },
+            data: {
+              status: "FAILED",
+              errorMessage: "Failed to trigger build worker",
+            },
+          })
+          .catch((updateErr: unknown) => {
+            logger.error(
+              `[HypnateX] Failed to mark job ${buildJob.id} as FAILED:`,
+              updateErr
+            );
+          });
+      });
+    }
 
     return res.status(202).json({
       message: "Build started",
@@ -151,6 +336,8 @@ export const startBuild = async (
     next(err);
   }
 };
+
+
 
 /* ─────────────────────────────────────────────
    GET /api/hypnate-x/status/:jobId
@@ -234,6 +421,7 @@ export const getMyStore = async (
 /* ─────────────────────────────────────────────
    PUT /api/hypnate-x/store
 ───────────────────────────────────────────── */
+
 export const updateStore = async (
   req: AuthRequest,
   res: Response,
@@ -241,30 +429,65 @@ export const updateStore = async (
 ) => {
   try {
     const sellerId = req.user?.sellerId;
-    if (!sellerId) return res.status(400).json({ message: "Seller account required" });
+    if (!sellerId) {
+      return res.status(400).json({ message: "Seller account required" });
+    }
 
     const { storeName, customDomain, logoUrl } = req.body;
 
-    const store = await (prisma as any).store.findFirst({ where: { sellerId } });
-    if (!store) return res.status(404).json({ message: "No store found" });
+    const store = await (prisma as any).store.findFirst({
+      where: { sellerId },
+      select: { id: true },
+    });
+
+    if (!store) {
+      return res.status(404).json({ message: "No store found" });
+    }
 
     const data: any = {};
+
     if (storeName) data.storeName = storeName.trim();
-    if (logoUrl)   data.logoUrl   = logoUrl;
+    if (logoUrl) data.logoUrl = logoUrl;
+
     if (customDomain !== undefined) {
       const domainRegex = /^([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}$/;
+
       if (customDomain && !domainRegex.test(customDomain)) {
         return res.status(400).json({ message: "Invalid domain format" });
       }
+
       data.customDomain = customDomain || null;
     }
 
-    const updated = await (prisma as any).store.update({ where: { id: store.id }, data });
-    return res.json(updated);
+    const updated = await (prisma as any).store.updateMany({
+      where: {
+        id: store.id,
+        sellerId,
+      },
+      data,
+    });
+
+    if (updated.count !== 1) {
+      return res.status(404).json({ message: "Store not found or ownership changed" });
+    }
+
+    const updatedStore = await (prisma as any).store.findFirst({
+      where: {
+        id: store.id,
+        sellerId,
+      },
+    });
+
+    if (!updatedStore) {
+      return res.status(404).json({ message: "Store not found" });
+    }
+
+    return res.json(updatedStore);
   } catch (err) {
     next(err);
   }
 };
+
 
 /* ─────────────────────────────────────────────
    INTERNAL — trigger Python worker
