@@ -4,6 +4,11 @@ import { getSellerId } from "../services/seller.service";
 import { sendMessage as sendPlatformMessage } from "../services/messaging/messaging.service";
 import { emitAuthorizedConversationEvents } from "../services/conversationRealtime.service";
 import { logger } from "../utils/logger";
+import {
+  acquirePhoneNumberLock,
+  resolveActiveOwner,
+  PhoneOwnershipError,
+} from "../services/whatsappOwnership.service";
 
 // ─────────────────────────────────────────────
 // GET STATS
@@ -304,6 +309,7 @@ export const updateConversationStatus = async (
 // ─────────────────────────────────────────────
 // GET MESSAGES
 // ─────────────────────────────────────────────
+
 export const getMessages = async (
   req: Request,
   res: Response,
@@ -326,87 +332,155 @@ export const getMessages = async (
       });
     }
 
-    // CRITICAL SECURITY CHECK:
-    // Never query messages using conversationId alone.
-    // First establish that this conversation belongs to
-    // the authenticated seller.
-    const conversation =
-      await prisma.conversation.findFirst({
-        where: {
-          id,
-          sellerId,
+    const result = await prisma.$transaction(async (tx) => {
+      // Read only enough information to identify the conversation
+      // and, for WhatsApp, its ownership-lock key.
+      const initial = await tx.conversation.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          sellerId: true,
+          platform: true,
+          externalThreadId: true,
         },
       });
 
-    if (!conversation) {
+      if (!initial) {
+        return null;
+      }
+
+      let authorizedConversation = initial;
+
+      if (initial.platform === "WHATSAPP") {
+        const phoneNumberId =
+          typeof initial.externalThreadId === "string"
+            ? initial.externalThreadId.trim()
+            : "";
+
+        // A WhatsApp conversation without a lock key cannot
+        // be safely authorized.
+        if (!phoneNumberId) {
+          return null;
+        }
+
+        // Serialize this read against ownership transfers.
+        await acquirePhoneNumberLock(tx, phoneNumberId);
+
+        // Never trust the pre-lock conversation snapshot.
+        const current = await tx.conversation.findUnique({
+          where: { id },
+          select: {
+            id: true,
+            sellerId: true,
+            platform: true,
+            externalThreadId: true,
+          },
+        });
+
+        if (
+          !current ||
+          current.platform !== "WHATSAPP" ||
+          (typeof current.externalThreadId === "string"
+            ? current.externalThreadId.trim()
+            : "") !== phoneNumberId
+        ) {
+          return null;
+        }
+
+        // Resolve the authoritative owner while holding the lock.
+        let owner;
+
+        try {
+          owner = await resolveActiveOwner(tx, phoneNumberId);
+        } catch (error) {
+          if (error instanceof PhoneOwnershipError) {
+            return null;
+          }
+
+          throw error;
+        }
+
+        // Both ownership records must agree.
+        if (
+          current.sellerId !== owner.sellerId ||
+          current.sellerId !== sellerId
+        ) {
+          return null;
+        }
+
+        authorizedConversation = current;
+      } else {
+        // Non-WhatsApp conversations have no WhatsApp transfer
+        // mechanism. Their seller-scoped row remains authoritative.
+        if (initial.sellerId !== sellerId) {
+          return null;
+        }
+      }
+
+      // Keep the tenant condition in the mutation as defense
+      // in depth. Check it before changing message read state.
+      const conversationUpdate =
+        await tx.conversation.updateMany({
+          where: {
+            id: authorizedConversation.id,
+            sellerId,
+          },
+          data: {
+            unreadCount: 0,
+          },
+        });
+
+      if (conversationUpdate.count !== 1) {
+        return null;
+      }
+
+      // Fetch messages only after authorization, within the
+      // same transaction and (for WhatsApp) while holding the lock.
+      const messages = await tx.message.findMany({
+        where: {
+          conversationId: authorizedConversation.id,
+        },
+        orderBy: {
+          createdAt: "asc",
+        },
+      });
+
+      await tx.message.updateMany({
+        where: {
+          conversationId: authorizedConversation.id,
+          sender: "CUSTOMER",
+          isRead: false,
+        },
+        data: {
+          isRead: true,
+        },
+      });
+
+      return {
+        conversationId: authorizedConversation.id,
+        messages,
+      };
+    });
+
+    if (!result) {
       return res.status(404).json({
         message: "Conversation not found",
       });
     }
 
-    const messages = await prisma.message.findMany({
-      where: {
-        conversationId: conversation.id,
-      },
-
-      orderBy: {
-        createdAt: "asc",
-      },
-    });
-
-    // The conversation ownership has already been verified.
-    // Keep sellerId in both mutation conditions as defense-in-depth.
-    const [, updatedConversation] =
-      await prisma.$transaction([
-        prisma.message.updateMany({
-          where: {
-            conversationId: conversation.id,
-            sender: "CUSTOMER",
-            isRead: false,
-          },
-
-          data: {
-            isRead: true,
-          },
-        }),
-
-        prisma.conversation.updateMany({
-          where: {
-            id: conversation.id,
-            sellerId,
-          },
-
-          data: {
-            unreadCount: 0,
-          },
-        }),
-      ]);
-
-    const refreshedConversation =
-      await prisma.conversation.findFirst({
-        where: {
-          id: conversation.id,
-          sellerId,
-        },
-      });
-
     const io = req.app.get("io");
 
-    // H-1: emission is authorized against the conversation's
-    // CURRENT owner under the phone-number lock; a concurrent
-    // transfer between the seller-scoped write above and this
-    // emission cannot leak the conversation payload to the
-    // previous seller. Fail closed: no emission on
-    // authorization failure.
-    if (io && refreshedConversation) {
+    // Realtime authorization is independently checked against
+    // the current owner after the read transaction commits.
+    if (io) {
       await emitAuthorizedConversationEvents(
         io,
-        refreshedConversation.id,
+        result.conversationId,
         [
           {
             event: "conversation_updated",
             payload: {
-              conversationId: refreshedConversation.id,
+              conversationId: result.conversationId,
               conversation: null,
             },
             toSellerRoom: true,
@@ -416,11 +490,12 @@ export const getMessages = async (
       );
     }
 
-    return res.json(messages);
+    return res.json(result.messages);
   } catch (err) {
     next(err);
   }
 };
+
 
 // ─────────────────────────────────────────────
 // SEND MESSAGE
