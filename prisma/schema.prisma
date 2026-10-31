@@ -683,6 +683,7 @@ model Theme {
   stores Store[]
 }
 
+
 model Store {
   id Int @id @default(autoincrement())
 
@@ -713,6 +714,7 @@ model Store {
 
   buildJobs BuildJob[]
 
+  @@unique([id, sellerId])
   @@index([sellerId])
 }
 
@@ -722,7 +724,7 @@ model BuildJob {
   storeId  Int
   sellerId Int
 
-  store Store @relation(fields: [storeId], references: [id])
+  store Store @relation(fields: [storeId, sellerId], references: [id, sellerId], onDelete: Restrict, onUpdate: Restrict)
 
   status      BuildStatus @default(QUEUED)
   currentStep String?
@@ -738,7 +740,7 @@ model BuildJob {
   buildLog    Json?
 
   startedAt   DateTime?
-  completedAt  DateTime?
+  completedAt DateTime?
 
   createdAt DateTime @default(now())
 
@@ -746,6 +748,7 @@ model BuildJob {
   @@index([sellerId])
   @@index([status])
 }
+
 
 // ─────────────────────────────────────────────
 // CONTACT SUBMISSIONS

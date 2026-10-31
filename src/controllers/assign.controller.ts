@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../prisma/client";
 import { getSellerId } from "../services/seller.service";
 import { logger } from "../utils/logger";
+import { emitAuthorizedConversationEvents } from "../services/conversationRealtime.service";
 
 export const assignConversation = async (
   req: Request,
@@ -126,14 +127,24 @@ export const assignConversation = async (
 
     const io = req.app.get("io");
 
-    // Never broadcast assignment changes to every tenant.
+    // Resolve the current owner at emission time.
+    // Do not use the request's sellerId for authorization:
+    // ownership may have changed since the assignment update.
     if (io) {
-      io.to(`seller_${sellerId}`).emit(
-        "conversation_updated",
-        {
-          conversationId: updatedConversation.id,
-          conversation: updatedConversation,
-        }
+      await emitAuthorizedConversationEvents(
+        io,
+        updatedConversation.id,
+        [
+          {
+            event: "conversation_updated",
+            payload: {
+              conversationId: updatedConversation.id,
+              conversation: null,
+            },
+            toSellerRoom: true,
+            refreshConversationInPayload: true,
+          },
+        ]
       );
     }
 
