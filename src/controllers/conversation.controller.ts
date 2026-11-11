@@ -523,19 +523,18 @@ export const sendMessage = async (
 
     const trimmedText = text.trim();
 
-    const conversation =
-      await prisma.conversation.findFirst({
-        where: {
-          id,
-          sellerId,
-        },
-      });
+    const access = await prisma.$transaction(async (tx) => {
+      return resolveConversationAccess(tx, id, sellerId);
+    });
 
-    if (!conversation) {
+    if (!access) {
       return res.status(404).json({
         message: "Conversation not found",
       });
     }
+
+    const conversation = access.conversation;
+    const ownerSellerId = access.ownerSellerId;
 
     /*
      * HYP-002-08:
@@ -551,7 +550,7 @@ export const sendMessage = async (
     try {
       providerResponse = await sendPlatformMessage(
         conversation.platform,
-        sellerId,
+        ownerSellerId,
         conversation.externalUserId,
         trimmedText,
         conversation.externalThreadId ?? undefined
@@ -600,7 +599,7 @@ export const sendMessage = async (
       await prisma.conversation.updateMany({
         where: {
           id: conversation.id,
-          sellerId,
+          sellerId: ownerSellerId,
         },
 
         data: {
@@ -619,7 +618,7 @@ export const sendMessage = async (
       await prisma.conversation.findFirst({
         where: {
           id: conversation.id,
-          sellerId,
+          sellerId: ownerSellerId,
         },
       });
 
