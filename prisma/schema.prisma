@@ -166,18 +166,20 @@ model Seller {
 
   createdAt DateTime @default(now())
 
-  users           User[]
-  products        Product[]
-  orders          Order[]
-  uploads         Upload[]
-  customers       Customer[]
-  stores          Store[]
-  conversations   Conversation[]
-  notifications   Notification[]
-  channels        ChannelConnection[]
-  quickReplies    QuickReply[] // FIX: added missing back-relation
-  phoneOwnerships WhatsAppPhoneOwnership[]
-  freeAccessGrants SellerFreeAccessGrant[]
+  users                      User[]
+  products                   Product[]
+  orders                     Order[]
+  uploads                    Upload[]
+  customers                  Customer[]
+  stores                     Store[]
+  conversations              Conversation[]
+  ownedConversationShares    ConversationShare[]      @relation("ConversationShareOwner")
+  receivedConversationShares ConversationShare[]      @relation("ConversationShareRecipient")
+  notifications              Notification[]
+  channels                   ChannelConnection[]
+  quickReplies               QuickReply[] // FIX: added missing back-relation
+  phoneOwnerships            WhatsAppPhoneOwnership[]
+  freeAccessGrants           SellerFreeAccessGrant[]
 }
 
 // ─────────────────────────────────────────────
@@ -211,19 +213,19 @@ model Seller {
 // evaluated against server time by getPlanAccess().
 
 model SellerFreeAccessGrant {
-  id        Int      @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  sellerId  Int
-  seller    Seller   @relation(fields: [sellerId], references: [id])
+  sellerId Int
+  seller   Seller @relation(fields: [sellerId], references: [id])
 
   // starter | pro | business
-  plan      String
+  plan String
 
   // Null = indefinite until revoked.
   expiresAt DateTime?
 
   // Required justification, captured for the audit trail.
-  reason    String
+  reason String
 
   grantedByAdminId Int
   grantedBy        AdminUser @relation("FreeAccessGrantor", fields: [grantedByAdminId], references: [id])
@@ -341,7 +343,7 @@ model WhatsAppTransferJournal {
 
   // Transferred WhatsApp phone-number IDs (Json array of strings).
   phoneNumberIds Json
-  wabaId        String?
+  wabaId         String?
 
   status String
 
@@ -363,7 +365,7 @@ model WhatsAppTransferJournal {
 
   error String?
 
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
   completedAt DateTime?
 
   @@index([sourceSellerId, destinationSellerId])
@@ -408,13 +410,37 @@ model Conversation {
   updatedAt DateTime @updatedAt
 
   messages Message[]
+  shares   ConversationShare[] @relation("ConversationShareConversationOwner")
 
+  @@unique([id, sellerId])
   @@unique([sellerId, platform, externalUserId, externalThreadId])
   @@index([sellerId])
   @@index([platform])
   @@index([status])
   @@index([assignedToId])
   @@index([labelId])
+}
+
+model ConversationShare {
+  id Int @id @default(autoincrement())
+
+  conversationId Int
+  conversation   Conversation @relation("ConversationShareConversationOwner", fields: [conversationId, ownerSellerId], references: [id, sellerId], onDelete: Cascade)
+
+  ownerSellerId Int
+  ownerSeller   Seller @relation("ConversationShareOwner", fields: [ownerSellerId], references: [id], onDelete: Restrict)
+
+  sharedWithSellerId Int
+  sharedWithSeller   Seller @relation("ConversationShareRecipient", fields: [sharedWithSellerId], references: [id], onDelete: Restrict)
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([conversationId, sharedWithSellerId])
+  @@index([ownerSellerId, isActive])
+  @@index([sharedWithSellerId, isActive])
 }
 
 // ─────────────────────────────────────────────
@@ -472,7 +498,7 @@ model Message {
 // ─────────────────────────────────────────────
 
 model QuickReply {
-  id   Int    @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
   sellerId Int
   // FIX: relation args were split with misplaced parentheses
@@ -584,6 +610,10 @@ model Order {
 
   createdAt DateTime       @default(now())
   products  ProductOrder[]
+
+  @@index([customerId], map: "Order_customerId_idx")
+  @@index([sellerId], map: "Order_sellerId_idx")
+  @@index([status], map: "Order_status_idx")
 }
 
 model Product {
@@ -631,7 +661,7 @@ model Upload {
   seller   Seller @relation(fields: [sellerId], references: [id])
 
   filename String
-  url String
+  url      String
 
   createdAt DateTime @default(now())
 }
@@ -682,7 +712,6 @@ model Theme {
 
   stores Store[]
 }
-
 
 model Store {
   id Int @id @default(autoincrement())
@@ -748,7 +777,6 @@ model BuildJob {
   @@index([sellerId])
   @@index([status])
 }
-
 
 // ─────────────────────────────────────────────
 // CONTACT SUBMISSIONS
@@ -880,10 +908,10 @@ model AdminUser {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sessions          AdminSession[]
-  auditLogs         AuditLog[]
-  assignedTickets   SupportTicket[] @relation("TicketAssignee")
-  ticketMessages    TicketMessage[] @relation("TicketMessageAuthor")
+  sessions                AdminSession[]
+  auditLogs               AuditLog[]
+  assignedTickets         SupportTicket[]         @relation("TicketAssignee")
+  ticketMessages          TicketMessage[]         @relation("TicketMessageAuthor")
   freeAccessGrantsGranted SellerFreeAccessGrant[] @relation("FreeAccessGrantor")
   freeAccessGrantsRevoked SellerFreeAccessGrant[] @relation("FreeAccessRevoker")
 }
@@ -912,7 +940,7 @@ model SupportTicket {
   id           Int            @id @default(autoincrement())
   ticketNumber String         @unique
   subject      String
-  description String?         @db.Text
+  description  String?        @db.Text
   status       TicketStatus   @default(OPEN)
   priority     TicketPriority @default(MEDIUM)
   category     String?
@@ -1034,8 +1062,8 @@ model AuditLog {
 
 // Key/value store for admin panel settings and feature flags.
 model AdminSetting {
-  id    Int     @id @default(autoincrement())
-  key   String  @unique
+  id    Int    @id @default(autoincrement())
+  key   String @unique
   value Json
 
   updatedAt DateTime @updatedAt

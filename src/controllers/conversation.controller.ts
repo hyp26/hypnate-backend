@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { Prisma } from "@prisma/client";
 import prisma from "../prisma/client";
 import { getSellerId } from "../services/seller.service";
 import { sendMessage as sendPlatformMessage } from "../services/messaging/messaging.service";
@@ -9,6 +10,101 @@ import {
   resolveActiveOwner,
   PhoneOwnershipError,
 } from "../services/whatsappOwnership.service";
+import { resolveConversationAccess } from "../services/conversationAccess.service";
+
+type ConversationListFilters = {
+  platform?: string;
+  status?: string;
+  search?: string;
+};
+
+const getAccessibleConversations = async (
+  sellerId: number,
+  filters: ConversationListFilters = {}
+) => {
+  return prisma.$transaction(async (tx) => {
+    const conditions: Prisma.ConversationWhereInput[] = [
+      {
+        OR: [
+          { sellerId },
+          {
+            shares: {
+              some: {
+                sharedWithSellerId: sellerId,
+                isActive: true,
+              },
+            },
+          },
+        ],
+      },
+    ];
+
+    if (filters.platform && filters.platform !== "all") {
+      conditions.push({
+        platform: filters.platform.toUpperCase() as any,
+      });
+    }
+
+    if (filters.status) {
+      conditions.push({
+        status: filters.status.toUpperCase() as any,
+      });
+    }
+
+    if (filters.search) {
+      conditions.push({
+        OR: [
+          {
+            customerName: {
+              contains: filters.search,
+              mode: "insensitive",
+            },
+          },
+          {
+            lastMessage: {
+              contains: filters.search,
+              mode: "insensitive",
+            },
+          },
+          {
+            customerPhone: {
+              contains: filters.search,
+              mode: "insensitive",
+            },
+          },
+        ],
+      });
+    }
+
+    const candidates = await tx.conversation.findMany({
+      where: {
+        AND: conditions,
+      },
+      select: {
+        id: true,
+      },
+      orderBy: {
+        lastMessageAt: "desc",
+      },
+    });
+
+    const accessible = [];
+
+    for (const candidate of candidates) {
+      const access = await resolveConversationAccess(
+        tx,
+        candidate.id,
+        sellerId
+      );
+
+      if (access) {
+        accessible.push(access.conversation);
+      }
+    }
+
+    return accessible;
+  });
+};
 
 // ─────────────────────────────────────────────
 // GET STATS
@@ -27,48 +123,30 @@ export const getConversationStats = async (
       });
     }
 
-    const [total, open, pending, resolved, unreadAgg] =
-      await Promise.all([
-        prisma.conversation.count({
-          where: { sellerId },
-        }),
+    const conversations = await getAccessibleConversations(sellerId);
 
-        prisma.conversation.count({
-          where: {
-            sellerId,
-            status: "OPEN",
-          },
-        }),
+    const stats = conversations.reduce(
+      (result, conversation) => {
+        result.total++;
 
-        prisma.conversation.count({
-          where: {
-            sellerId,
-            status: "PENDING",
-          },
-        }),
+        if (conversation.status === "OPEN") result.open++;
+        if (conversation.status === "PENDING") result.pending++;
+        if (conversation.status === "RESOLVED") result.resolved++;
 
-        prisma.conversation.count({
-          where: {
-            sellerId,
-            status: "RESOLVED",
-          },
-        }),
+        result.totalUnread += conversation.unreadCount;
 
-        prisma.conversation.aggregate({
-          where: { sellerId },
-          _sum: {
-            unreadCount: true,
-          },
-        }),
-      ]);
+        return result;
+      },
+      {
+        total: 0,
+        open: 0,
+        pending: 0,
+        resolved: 0,
+        totalUnread: 0,
+      }
+    );
 
-    return res.json({
-      total,
-      open,
-      pending,
-      resolved,
-      totalUnread: unreadAgg._sum.unreadCount ?? 0,
-    });
+    return res.json(stats);
   } catch (err) {
     next(err);
   }
@@ -91,56 +169,26 @@ export const getConversations = async (
       });
     }
 
-    const platform = req.query.platform as string | undefined;
-    const status = req.query.status as string | undefined;
+    const platform =
+      typeof req.query.platform === "string"
+        ? req.query.platform
+        : undefined;
+
+    const status =
+      typeof req.query.status === "string"
+        ? req.query.status
+        : undefined;
 
     const search =
       typeof req.query.search === "string"
         ? req.query.search
         : "";
 
-    const conversations =
-      await prisma.conversation.findMany({
-        where: {
-          sellerId,
-
-          ...(platform &&
-            platform !== "all" && {
-              platform: platform.toUpperCase() as any,
-            }),
-
-          ...(status && {
-            status: status.toUpperCase() as any,
-          }),
-
-          ...(search && {
-            OR: [
-              {
-                customerName: {
-                  contains: search,
-                  mode: "insensitive",
-                },
-              },
-              {
-                lastMessage: {
-                  contains: search,
-                  mode: "insensitive",
-                },
-              },
-              {
-                customerPhone: {
-                  contains: search,
-                  mode: "insensitive",
-                },
-              },
-            ],
-          }),
-        },
-
-        orderBy: {
-          lastMessageAt: "desc",
-        },
-      });
+    const conversations = await getAccessibleConversations(sellerId, {
+      platform,
+      status,
+      search,
+    });
 
     return res.json(conversations);
   } catch (err) {
@@ -173,15 +221,15 @@ export const getConversationById = async (
       });
     }
 
-    // IMPORTANT:
-    // Conversation lookup is always scoped to the authenticated seller.
-    const conversation =
-      await prisma.conversation.findFirst({
-        where: {
-          id,
-          sellerId,
-        },
-      });
+    const conversation = await prisma.$transaction(async (tx) => {
+      const access = await resolveConversationAccess(
+        tx,
+        id,
+        sellerId
+      );
+
+      return access?.conversation ?? null;
+    });
 
     if (!conversation) {
       return res.status(404).json({
@@ -332,135 +380,73 @@ export const getMessages = async (
       });
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      // Read only enough information to identify the conversation
-      // and, for WhatsApp, its ownership-lock key.
-      const initial = await tx.conversation.findUnique({
-        where: { id },
-        select: {
-          id: true,
-          sellerId: true,
-          platform: true,
-          externalThreadId: true,
-        },
-      });
+    
+    const result = await prisma.$transaction(
+      async (tx) => {
+        // Resolve owner or explicitly shared access.
+        // For WhatsApp, this also acquires the phone lock and
+        // validates normalized ownership before granting access.
+        const access = await resolveConversationAccess(
+          tx,
+          id,
+          sellerId
+        );
 
-      if (!initial) {
-        return null;
-      }
-
-      let authorizedConversation = initial;
-
-      if (initial.platform === "WHATSAPP") {
-        const phoneNumberId =
-          typeof initial.externalThreadId === "string"
-            ? initial.externalThreadId.trim()
-            : "";
-
-        // A WhatsApp conversation without a lock key cannot
-        // be safely authorized.
-        if (!phoneNumberId) {
+        if (!access) {
           return null;
         }
 
-        // Serialize this read against ownership transfers.
-        await acquirePhoneNumberLock(tx, phoneNumberId);
+        const conversationId = access.conversation.id;
+        const ownerSellerId = access.ownerSellerId;
 
-        // Never trust the pre-lock conversation snapshot.
-        const current = await tx.conversation.findUnique({
-          where: { id },
-          select: {
-            id: true,
-            sellerId: true,
-            platform: true,
-            externalThreadId: true,
-          },
-        });
-
-        if (
-          !current ||
-          current.platform !== "WHATSAPP" ||
-          (typeof current.externalThreadId === "string"
-            ? current.externalThreadId.trim()
-            : "") !== phoneNumberId
-        ) {
-          return null;
-        }
-
-        // Resolve the authoritative owner while holding the lock.
-        let owner;
-
-        try {
-          owner = await resolveActiveOwner(tx, phoneNumberId);
-        } catch (error) {
-          if (error instanceof PhoneOwnershipError) {
-            return null;
-          }
-
-          throw error;
-        }
-
-        // Both ownership records must agree.
-        if (
-          current.sellerId !== owner.sellerId ||
-          current.sellerId !== sellerId
-        ) {
-          return null;
-        }
-
-        authorizedConversation = current;
-      } else {
-        // Non-WhatsApp conversations have no WhatsApp transfer
-        // mechanism. Their seller-scoped row remains authoritative.
-        if (initial.sellerId !== sellerId) {
-          return null;
-        }
-      }
-
-      // Keep the tenant condition in the mutation as defense
-      // in depth. Check it before changing message read state.
-      const conversationUpdate =
-        await tx.conversation.updateMany({
+        // Always mutate the original owner's conversation.
+        // Never substitute the requesting seller's ID here.
+        const conversationUpdate = await tx.conversation.updateMany({
           where: {
-            id: authorizedConversation.id,
-            sellerId,
+            id: conversationId,
+            sellerId: ownerSellerId,
           },
           data: {
             unreadCount: 0,
           },
         });
 
-      if (conversationUpdate.count !== 1) {
-        return null;
+        if (conversationUpdate.count !== 1) {
+          return null;
+        }
+
+        // Fetch history only after authorization.
+        const messages = await tx.message.findMany({
+          where: {
+            conversationId,
+          },
+          orderBy: {
+            createdAt: "asc",
+          },
+        });
+
+        await tx.message.updateMany({
+          where: {
+            conversationId,
+            sender: "CUSTOMER",
+            isRead: false,
+          },
+          data: {
+            isRead: true,
+          },
+        });
+
+        return {
+          conversationId,
+          messages,
+        };
+      },
+      {
+        maxWait: 10000,
+        timeout: 30000,
       }
+    );
 
-      // Fetch messages only after authorization, within the
-      // same transaction and (for WhatsApp) while holding the lock.
-      const messages = await tx.message.findMany({
-        where: {
-          conversationId: authorizedConversation.id,
-        },
-        orderBy: {
-          createdAt: "asc",
-        },
-      });
-
-      await tx.message.updateMany({
-        where: {
-          conversationId: authorizedConversation.id,
-          sender: "CUSTOMER",
-          isRead: false,
-        },
-        data: {
-          isRead: true,
-        },
-      });
-
-      return {
-        conversationId: authorizedConversation.id,
-        messages,
-      };
-    });
 
     if (!result) {
       return res.status(404).json({

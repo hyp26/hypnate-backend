@@ -87,10 +87,10 @@ const asIo = (io: unknown): IoLike | null => {
  * Returns the number of sockets that received the event.
  * Never throws — emission is best-effort delivery.
  */
-const deliverToAuthorizedSockets = async (
+const deliverToAuthorizedSellers = async (
   socketIo: IoLike,
   conversationId: number,
-  authorizedSellerId: number,
+  authorizedSellerIds: Set<number>,
   event: ConversationEventName,
   payload: unknown
 ): Promise<number> => {
@@ -102,13 +102,16 @@ const deliverToAuthorizedSockets = async (
       .fetchSockets();
 
     for (const socket of sockets) {
-      if (socket.data?.sellerId !== authorizedSellerId) {
-        // Stale or foreign membership: skip, do not deliver.
+      const socketSellerId = socket.data?.sellerId;
+
+      if (
+        typeof socketSellerId !== "number" ||
+        !authorizedSellerIds.has(socketSellerId)
+      ) {
         continue;
       }
 
       socket.emit(event, payload);
-
       delivered += 1;
     }
   } catch (err) {
@@ -144,10 +147,10 @@ export const emitToConversationRoom = async (
     return 0;
   }
 
-  return deliverToAuthorizedSockets(
+  return deliverToAuthorizedSellers(
     socketIo,
     conversationId,
-    authorizedSellerId,
+    new Set([authorizedSellerId]),
     event,
     payload
   );
@@ -312,6 +315,22 @@ export const emitAuthorizedConversationEvents = async (
         authorizedSellerId = conversation.sellerId;
       }
 
+      const activeShares = await tx.conversationShare.findMany({
+        where: {
+          conversationId,
+          ownerSellerId: authorizedSellerId,
+          isActive: true,
+        },
+        select: {
+          sharedWithSellerId: true,
+        },
+      });
+
+      const authorizedSellerIds = new Set<number>([
+        authorizedSellerId,
+        ...activeShares.map((share) => share.sharedWithSellerId),
+      ]);
+
       /*
        * Fresh conversation row for payload refresh — read under
        * the same lock, so the broadcast can never carry a
@@ -361,10 +380,10 @@ export const emitAuthorizedConversationEvents = async (
           }
         }
 
-        await deliverToAuthorizedSockets(
+        await deliverToAuthorizedSellers(
           socketIo,
           conversationId,
-          authorizedSellerId,
+          authorizedSellerIds,
           spec.event,
           payload
         );
