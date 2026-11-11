@@ -647,32 +647,56 @@ export const unsubscribeWabaWebhooks = async (
  * connection metadata. sendWhatsAppMessageForSeller() is the
  * guarded entry point.
  */
+
 export const sendWhatsAppMessage = async (
   accessToken: string,
   phoneNumberId: string,
   to: string,
   text: string
 ) => {
-  const { data } = await axios.post(
-    `${GRAPH_URL}/${phoneNumberId}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: {
-        body: text,
+  try {
+    const { data } = await axios.post(
+      `${GRAPH_URL}/${phoneNumberId}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: {
+          body: text,
+        },
       },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
-  return data;
+    return data;
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const metaError = error.response?.data?.error;
+
+      logger.error("WhatsApp Meta API request rejected", {
+        status: error.response?.status,
+        code: metaError?.code,
+        errorSubcode: metaError?.error_subcode,
+        type: metaError?.type,
+        message: metaError?.message,
+        fbtraceId: metaError?.fbtrace_id,
+      });
+    } else {
+      logger.error("WhatsApp request failed unexpectedly", {
+        message:
+          error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+
+    throw error;
+  }
 };
+
 
 /*
  * Pure phone-number selection for outbound sends
