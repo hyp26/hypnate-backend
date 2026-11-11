@@ -181,10 +181,8 @@ describe(
      * room (stale membership for seller A after the transfer),
      * and seller-room broadcasts are recorded per room.
      */
-    const makeIo = (sellerASocket: any, sellerBSocket: any) => {
+    const makeIo = (...sockets: any[]) => {
       const roomEmits: Array<{ room: string; event: string }> = [];
-
-      const sockets = [sellerASocket, sellerBSocket];
 
       const io = {
         in: (room: string) => ({
@@ -556,6 +554,112 @@ describe(
       assert.equal(result, seller.id);
       assert.equal(ownerSocket.emitted.length, 1);
       assert.deepEqual([...otherSocket.emitted], []);
+    });
+    it("delivers conversation events to the owner and an active shared recipient only", async () => {
+      const owner = await createSeller("share-active-owner");
+      const recipient = await createSeller("share-active-recipient");
+      const unrelated = await createSeller("share-active-unrelated");
+
+      const conversation = await prisma.conversation.create({
+        data: {
+          sellerId: owner.id,
+          platform: "INSTAGRAM",
+          customerName: `share-active-${stamp}`,
+          externalUserId: `share-active-ext-${stamp}`,
+        },
+      });
+
+      createdConversationIds.push(conversation.id);
+
+      await prisma.conversationShare.create({
+        data: {
+          conversationId: conversation.id,
+          ownerSellerId: owner.id,
+          sharedWithSellerId: recipient.id,
+          isActive: true,
+        },
+      });
+
+      const ownerSocket = makeSocket(owner.id);
+      const recipientSocket = makeSocket(recipient.id);
+      const unrelatedSocket = makeSocket(unrelated.id);
+
+      const io = makeIo(ownerSocket, recipientSocket, unrelatedSocket);
+
+      const result = await emitAuthorizedConversationEvents(
+        io,
+        conversation.id,
+        [
+          {
+            event: "conversation_updated",
+            payload: { conversationId: conversation.id },
+            toSellerRoom: true,
+          },
+        ]
+      );
+
+      assert.equal(result, owner.id);
+      assert.equal(ownerSocket.emitted.length, 1);
+      assert.equal(recipientSocket.emitted.length, 1);
+      assert.deepEqual([...unrelatedSocket.emitted], []);
+
+      assert.deepEqual(io.roomEmits, [
+        { room: `seller_${owner.id}`, event: "conversation_updated" },
+      ]);
+    });
+
+    it("does not deliver conversation events to a recipient after share revocation", async () => {
+      const owner = await createSeller("share-revoked-owner");
+      const recipient = await createSeller("share-revoked-recipient");
+
+      const conversation = await prisma.conversation.create({
+        data: {
+          sellerId: owner.id,
+          platform: "INSTAGRAM",
+          customerName: `share-revoked-${stamp}`,
+          externalUserId: `share-revoked-ext-${stamp}`,
+        },
+      });
+
+      createdConversationIds.push(conversation.id);
+
+      const share = await prisma.conversationShare.create({
+        data: {
+          conversationId: conversation.id,
+          ownerSellerId: owner.id,
+          sharedWithSellerId: recipient.id,
+          isActive: true,
+        },
+      });
+
+      await prisma.conversationShare.update({
+        where: { id: share.id },
+        data: { isActive: false },
+      });
+
+      const ownerSocket = makeSocket(owner.id);
+      const recipientSocket = makeSocket(recipient.id);
+      const io = makeIo(ownerSocket, recipientSocket);
+
+      const result = await emitAuthorizedConversationEvents(
+        io,
+        conversation.id,
+        [
+          {
+            event: "conversation_updated",
+            payload: { conversationId: conversation.id },
+            toSellerRoom: true,
+          },
+        ]
+      );
+
+      assert.equal(result, owner.id);
+      assert.equal(ownerSocket.emitted.length, 1);
+      assert.deepEqual([...recipientSocket.emitted], []);
+
+      assert.deepEqual(io.roomEmits, [
+        { room: `seller_${owner.id}`, event: "conversation_updated" },
+      ]);
     });
   }
 );

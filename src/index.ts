@@ -51,6 +51,7 @@ import { logger } from "./utils/logger";
 
 // Prisma + JWT
 import prisma from "./prisma/client";
+import { resolveConversationAccess } from "./services/conversationAccess.service";
 import { JWT_SECRET } from "./utils/jwtConfig";
 
 const app = express();
@@ -539,56 +540,44 @@ io.on("connection", (socket) => {
    * authenticated seller before allowing the socket into
    * the conversation room.
    */
-  socket.on(
-    "join_conversation",
-    async (conversationId) => {
-      try {
-        const id = Number(conversationId);
+  socket.on("join_conversation", async (conversationId) => {
+  try {
+    const id = Number(conversationId);
 
-        if (
-          !Number.isInteger(id) ||
-          id <= 0
-        ) {
-          return;
-        }
-
-        const conversation =
-          await prisma.conversation.findFirst({
-            where: {
-              id,
-              sellerId,
-            },
-
-            select: {
-              id: true,
-            },
-          });
-
-        if (!conversation) {
-          /*
-           * Do not reveal whether another tenant's
-           * conversation exists.
-           */
-          socket.emit(
-            "conversation_access_denied",
-            {
-              conversationId: id,
-            }
-          );
-
-          return;
-        }
-
-        socket.join(`room_${conversation.id}`);
-      } catch (err) {
-        logger.error(
-          "Socket conversation authorization error:",
-          err
-        );
-      }
+    if (!Number.isInteger(id) || id <= 0) {
+      return;
     }
-  
-);
+
+    const access = await prisma.$transaction(
+      async (tx) => {
+        return resolveConversationAccess(tx, id, sellerId);
+      },
+      {
+        maxWait: 10000,
+        timeout: 30000,
+      }
+    );
+
+    if (!access) {
+      socket.emit("conversation_access_denied", {
+        conversationId: id,
+      });
+
+      return;
+    }
+
+    socket.join(`room_${id}`);
+  } catch (err) {
+    logger.error(
+      "Socket conversation authorization error:",
+      err
+    );
+
+    socket.emit("conversation_access_denied", {
+      conversationId: Number(conversationId),
+    });
+  }
+});
 
   /*
    * Leave conversation room.

@@ -145,40 +145,48 @@ describe(
       return response;
     };
 
-    const transferToB = async (
-      phoneNumberId: string,
-      connectionAId: number,
-      connectionBId: number,
-      conversationId: number,
-      sellerBId: number
-    ) => {
-      await prisma.$transaction(async (tx: any) => {
-        await acquirePhoneNumberLock(tx, phoneNumberId);
+    
+const transferToB = async (
+  phoneNumberId: string,
+  connectionAId: number,
+  connectionBId: number,
+  conversationId: number,
+  sellerBId: number
+) => {
+  await prisma.$transaction(
+    async (tx: any) => {
+      await acquirePhoneNumberLock(tx, phoneNumberId);
 
-        await tx.whatsAppPhoneOwnership.updateMany({
-          where: {
-            connectionId: connectionAId,
-            isActive: true,
-          },
-          data: { isActive: false },
-        });
-
-        await tx.whatsAppPhoneOwnership.create({
-          data: {
-            phoneNumberId,
-            connectionId: connectionBId,
-            sellerId: sellerBId,
-            wabaId: `WABA-${stamp}`,
-            isActive: true,
-          },
-        });
-
-        await tx.conversation.update({
-          where: { id: conversationId },
-          data: { sellerId: sellerBId },
-        });
+      await tx.whatsAppPhoneOwnership.updateMany({
+        where: {
+          connectionId: connectionAId,
+          isActive: true,
+        },
+        data: { isActive: false },
       });
-    };
+
+      await tx.whatsAppPhoneOwnership.create({
+        data: {
+          phoneNumberId,
+          connectionId: connectionBId,
+          sellerId: sellerBId,
+          wabaId: `WABA-${stamp}`,
+          isActive: true,
+        },
+      });
+
+      await tx.conversation.update({
+        where: { id: conversationId },
+        data: { sellerId: sellerBId },
+      });
+    },
+    {
+      maxWait: 10000,
+      timeout: 30000,
+    }
+  );
+};
+
 
     before(async () => {
       prisma = (await import("../prisma/client")).default;
@@ -335,6 +343,138 @@ describe(
       assert.equal(storedConversation.unreadCount, 0);
     });
 
+
+    it("allows an explicitly shared recipient to read conversation history", async () => {
+      const phone = `f2-shared-a-${stamp}`;
+      const owner = await createSeller("share-owner");
+      const recipient = await createSeller("share-recipient");
+
+      const connection = await createConnection(owner.id, phone);
+      await establishOwnership(connection, owner.id, phone);
+
+      const conversation = await createConversation(owner.id, phone);
+      const message = await createUnreadMessage(conversation.id);
+
+      await prisma.conversationShare.create({
+        data: {
+          conversationId: conversation.id,
+          ownerSellerId: owner.id,
+          sharedWithSellerId: recipient.id,
+          isActive: true,
+        },
+      });
+
+      const response = await invokeGetMessages(
+        conversation.id,
+        recipient.id
+      );
+
+      assert.equal(response.statusCode, 200);
+      assert.equal(response.body.length, 1);
+      assert.equal(response.body[0].id, message.id);
+
+      const storedMessage = await prisma.message.findUnique({
+        where: { id: message.id },
+      });
+
+      const storedConversation = await prisma.conversation.findUnique({
+        where: { id: conversation.id },
+      });
+
+      assert.equal(storedMessage.isRead, true);
+      assert.equal(storedConversation.unreadCount, 0);
+
+      // Sharing must never transfer conversation ownership.
+      assert.equal(storedConversation.sellerId, owner.id);
+    });
+
+    it("denies a recipient after their conversation share is revoked", async () => {
+      const phone = `f2-shared-b-${stamp}`;
+      const owner = await createSeller("revoke-owner");
+      const recipient = await createSeller("revoke-recipient");
+
+      const connection = await createConnection(owner.id, phone);
+      await establishOwnership(connection, owner.id, phone);
+
+      const conversation = await createConversation(owner.id, phone);
+      const message = await createUnreadMessage(conversation.id);
+
+      const share = await prisma.conversationShare.create({
+        data: {
+          conversationId: conversation.id,
+          ownerSellerId: owner.id,
+          sharedWithSellerId: recipient.id,
+          isActive: true,
+        },
+      });
+
+      await prisma.conversationShare.update({
+        where: { id: share.id },
+        data: { isActive: false },
+      });
+
+      const response = await invokeGetMessages(
+        conversation.id,
+        recipient.id
+      );
+
+      assert.equal(response.statusCode, 404);
+
+      const storedMessage = await prisma.message.findUnique({
+        where: { id: message.id },
+      });
+
+      const storedConversation = await prisma.conversation.findUnique({
+        where: { id: conversation.id },
+      });
+
+      assert.equal(storedMessage.isRead, false);
+      assert.equal(storedConversation.unreadCount, 1);
+      assert.equal(storedConversation.sellerId, owner.id);
+    });
+
+    it("denies an unrelated seller when another recipient has the share", async () => {
+      const phone = `f2-shared-c-${stamp}`;
+      const owner = await createSeller("isolated-owner");
+      const recipient = await createSeller("authorized-recipient");
+      const unrelated = await createSeller("unauthorized-recipient");
+
+      const connection = await createConnection(owner.id, phone);
+      await establishOwnership(connection, owner.id, phone);
+
+      const conversation = await createConversation(owner.id, phone);
+      const message = await createUnreadMessage(conversation.id);
+
+      await prisma.conversationShare.create({
+        data: {
+          conversationId: conversation.id,
+          ownerSellerId: owner.id,
+          sharedWithSellerId: recipient.id,
+          isActive: true,
+        },
+      });
+
+      const response = await invokeGetMessages(
+        conversation.id,
+        unrelated.id
+      );
+
+      assert.equal(response.statusCode, 404);
+
+      const storedMessage = await prisma.message.findUnique({
+        where: { id: message.id },
+      });
+
+      const storedConversation = await prisma.conversation.findUnique({
+        where: { id: conversation.id },
+      });
+
+      assert.equal(storedMessage.isRead, false);
+      assert.equal(storedConversation.unreadCount, 1);
+      assert.equal(storedConversation.sellerId, owner.id);
+    });
+
+
     it("waits for a transfer holding the phone lock and rejects the former owner", async () => {
       const phone = `f2-d-${stamp}`;
       const sellerA = await createSeller("race-a");
@@ -461,28 +601,49 @@ describe(
         let releaseBlocker!: () => void;
         let tableLockAcquired = false;
         let transferCommitted = false;
+        let blockerError: unknown;
 
         const blockerRelease = new Promise<void>((resolve) => {
-            releaseBlocker = resolve;
+          releaseBlocker = resolve;
         });
 
         // Temporarily block ownership-table queries.
-        const blockerPromise = prisma.$transaction(async (tx: any) => {
+        const blockerPromise = prisma.$transaction(
+          async (tx: any) => {
             await tx.$executeRawUnsafe(
-            'LOCK TABLE "WhatsAppPhoneOwnership" IN ACCESS EXCLUSIVE MODE'
+              'LOCK TABLE "WhatsAppPhoneOwnership" IN ACCESS EXCLUSIVE MODE'
             );
 
             tableLockAcquired = true;
             await blockerRelease;
+          },
+          {
+            maxWait: 10000,
+            timeout: 30000,
+          }
+        ).catch((error: unknown) => {
+          blockerError = error;
         });
 
         try {
-            // Wait until PostgreSQL confirms the temporary table lock.
-            for (let i = 0; i < 100 && !tableLockAcquired; i += 1) {
+          // Allow up to 15 seconds for database lock acquisition.
+          for (
+            let i = 0;
+            i < 750 && !tableLockAcquired && !blockerError;
+            i += 1
+          ) {
             await sleep(20);
-            }
+          }
 
-            assert.ok(tableLockAcquired, "temporary table lock must be acquired");
+          if (blockerError) {
+            throw blockerError;
+          }
+
+          assert.ok(
+            tableLockAcquired,
+            "temporary table lock must be acquired within 15 seconds"
+          );
+
 
             // Start Seller A's read. It should acquire the phone lock,
             // then wait when it tries to read the ownership table.
@@ -549,7 +710,7 @@ describe(
                 phone,
                 connectionA.id,
                 connectionB.id,
-                conversation.id,
+                conversation.id,  
                 sellerB.id
             );
 
