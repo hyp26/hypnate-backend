@@ -29,8 +29,15 @@ type MetaDebugTokenData = {
   is_valid?: boolean;
   app_id?: string | number;
   user_id?: string | number;
+  type?: string;
+  expires_at?: number;
+  data_access_expires_at?: number;
   scopes?: unknown;
   granular_scopes?: unknown;
+  error?: {
+    code?: number;
+    message?: string;
+  };
 };
 
 export const exchangeCodeForAccessToken = async (
@@ -389,6 +396,12 @@ export const diagnoseOAuthTokenScopes = async (
       shapeScopesType: Array.isArray(data.scopes)
         ? "array"
         : typeof data.scopes,
+
+      tokenType: data.type ?? null,
+      expiresAt: data.expires_at ?? null,
+      dataAccessExpiresAt: data.data_access_expires_at ?? null,
+      debugErrorCode: data.error?.code ?? null,
+      debugErrorMessage: data.error?.message ?? null,
     });
   } catch (err) {
     const axiosError = err as {
