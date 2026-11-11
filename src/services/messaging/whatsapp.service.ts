@@ -887,6 +887,8 @@ export const sendWhatsAppMessageForSeller = async (
     );
   }
 
+  await diagnoseOAuthTokenScopes(accessToken);
+
   return sendWhatsAppMessage(
     accessToken,
     resolvedPhoneNumberId,
