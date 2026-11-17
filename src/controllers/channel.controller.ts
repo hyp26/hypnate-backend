@@ -126,123 +126,394 @@ const redirectWithWhatsAppResult = (
    TELEGRAM CONNECTION
 ---------------------------------------------------- */
 
+/*
+ * Replace the existing Telegram helper functions and connectTelegram
+ * controller with this block. Leave all WhatsApp code below untouched.
+ */
+const TELEGRAM_CONNECTION_LOCK_NAMESPACE = 0x54474c;
+
+let telegramConnectionQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Serialize Telegram connection work within this Node.js process before
+ * acquiring a database connection. This deliberately allows only one active
+ * Telegram connection lifecycle per process, preventing concurrent lock
+ * holders for different sellers from exhausting the Prisma pool while each
+ * lifecycle uses the main Prisma client for durable writes.
+ */
+const withLocalTelegramConnectionQueue = async <T>(
+  operation: () => Promise<T>
+): Promise<T> => {
+  const previous = telegramConnectionQueue;
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.then(() => current);
+
+  telegramConnectionQueue = queued;
+  await previous;
+
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (telegramConnectionQueue === queued) {
+      telegramConnectionQueue = Promise.resolve();
+    }
+  }
+};
+
+/**
+ * Serialize a seller's Telegram lifecycle across backend instances.
+ * The transaction is used only to hold the transaction-scoped advisory lock.
+ * Lifecycle writes intentionally use the main Prisma client so credential
+ * persistence commits before the external Telegram API request.
+ */
+const withTelegramConnectionLock = async <T>(
+  sellerId: number,
+  operation: () => Promise<T>
+): Promise<T> =>
+  withLocalTelegramConnectionQueue(() =>
+    prisma.$transaction(
+      async (lockTx) => {
+        // PostgreSQL's two-int advisory-lock keyspace is separate from the
+        // one-bigint keyspace used by existing WhatsApp phone-number locks.
+        // $executeRaw is intentional: pg_advisory_xact_lock returns void.
+        await lockTx.$executeRaw`
+          SELECT pg_advisory_xact_lock(
+            CAST(${TELEGRAM_CONNECTION_LOCK_NAMESPACE} AS INTEGER),
+            CAST(${sellerId} AS INTEGER)
+          )
+        `;
+        return operation();
+      },
+      { maxWait: 10_000, timeout: 30_000 }
+    )
+  );
+
+const getTelegramBotIdFromToken = (botToken: string): string | null => {
+  const match = /^(\d+):/.exec(botToken);
+  return match?.[1] ?? null;
+};
+
+const isPrismaUniqueConstraintError = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  (error as { code?: string }).code === "P2002";
+
+type TelegramConnectResult = {
+  status: number;
+  body: Record<string, unknown>;
+};
+
+/**
+ * Telegram API failures, including timeouts, are treated as unsuccessful.
+ * The caller retains the inactive reservation so the same bot can retry
+ * using the same persisted webhook secret.
+ */
+const registerTelegramWebhook = async (
+  botToken: string,
+  webhookUrl: string,
+  webhookSecret: string
+): Promise<boolean> => {
+  try {
+    const response = await axios.post(
+      `https://api.telegram.org/bot${botToken}/setWebhook`,
+      { url: webhookUrl, secret_token: webhookSecret },
+      { timeout: 10_000 }
+    );
+    return response.data?.ok === true;
+  } catch {
+    // Never log the Axios error: its request URL contains the bot token.
+    return false;
+  }
+};
+
 export const connectTelegram = async (
   req: Request,
   res: Response
 ) => {
   try {
     const authReq = req as AuthRequest;
-
     const sellerId = authReq.user?.sellerId;
 
     if (!sellerId) {
-      return res.status(401).json({
-        message: "Unauthorized",
-      });
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
-    const { botToken } = req.body;
-
-    if (
-      typeof botToken !== "string" ||
-      botToken.trim().length === 0
-    ) {
-      return res.status(400).json({
-        message: "Bot token required",
-      });
+    const botToken = req.body?.botToken;
+    if (typeof botToken !== "string" || botToken.trim().length === 0) {
+      return res.status(400).json({ message: "Bot token required" });
     }
 
-    const WEBHOOK_BASE_URL = ENV.WEBHOOK_BASE_URL;
+    const normalizedBotToken = botToken.trim();
+    const configuredWebhookBaseUrl = ENV.WEBHOOK_BASE_URL;
 
-    if (!WEBHOOK_BASE_URL) {
+    if (!configuredWebhookBaseUrl) {
       return res.status(500).json({
         message: "WEBHOOK_BASE_URL not configured",
       });
     }
 
-    // Verify bot token first.
-    const botInfo = await axios.get(
-      `https://api.telegram.org/bot${botToken}/getMe`
-    );
+    const webhookBaseUrl = configuredWebhookBaseUrl.replace(/\/+$/, "");
+    const webhookUrl =
+      `${webhookBaseUrl}/api/webhooks/telegram/${sellerId}`;
 
-    if (!botInfo.data?.ok) {
+    let botInfo: {
+      ok?: boolean;
+      result?: {
+        id?: number;
+        first_name?: string;
+        username?: string;
+      };
+    } | null = null;
+
+    try {
+      const response = await axios.get(
+        `https://api.telegram.org/bot${normalizedBotToken}/getMe`,
+        { timeout: 10_000 }
+      );
+      botInfo = response.data;
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })
+        ?.response?.status;
+
+      if (status === 401 || status === 404) {
+        return res.status(400).json({
+          message: "Invalid Telegram bot token",
+        });
+      }
+
+      logger.error("Telegram bot-token verification request failed");
+      return res.status(502).json({
+        message: "Could not verify the Telegram bot token",
+      });
+    }
+
+    const rawBotId = botInfo?.result?.id;
+    if (
+      !botInfo?.ok ||
+      typeof rawBotId !== "number" ||
+      !Number.isSafeInteger(rawBotId) ||
+      rawBotId <= 0
+    ) {
       return res.status(400).json({
         message: "Invalid Telegram bot token",
       });
     }
 
-    const webhookUrl =
-      `${WEBHOOK_BASE_URL}/api/webhooks/telegram/${sellerId}`;
+    const botId = String(rawBotId);
 
-    /*
-     * Generate a cryptographically secure secret for Telegram's
-     * X-Telegram-Bot-Api-Secret-Token header.
-     *
-     * This secret is NOT derived from sellerId and is never
-     * returned to the browser.
-     */
-    const webhookSecret = crypto
-      .randomBytes(32)
-      .toString("base64url");
+    const result = await withTelegramConnectionLock(
+      sellerId,
+      async (): Promise<TelegramConnectResult> => {
+        // Re-read only after acquiring the lock. A request that waited for a
+        // previous connection attempt must make its decision from fresh state.
+        let existing = await prisma.channelConnection.findFirst({
+          where: { sellerId, platform: "TELEGRAM" },
+        });
 
-    /*
-     * Register the webhook with Telegram.
-     *
-     * Telegram will include this exact secret in the
-     * X-Telegram-Bot-Api-Secret-Token header on every
-     * webhook request.
-     */
-    const webhookResponse = await axios.post(
-      `https://api.telegram.org/bot${botToken}/setWebhook`,
-      {
-        url: webhookUrl,
-        secret_token: webhookSecret,
+        /**
+         * Update an existing identity in place. Credentials are persisted
+         * before setWebhook. If Telegram accepts the request but the response
+         * is lost, retrying uses the same stored secret and can register it
+         * again.
+         */
+        const reconnectExisting = async (
+          connection: NonNullable<typeof existing>
+        ): Promise<TelegramConnectResult> => {
+          let existingBotId = connection.externalAccountId;
+
+          // Legacy rows may not have externalAccountId. Recover it from the
+          // numeric bot-ID prefix in the encrypted BotFather token.
+          if (!existingBotId && connection.accessToken) {
+            try {
+              existingBotId = getTelegramBotIdFromToken(
+                decrypt(connection.accessToken)
+              );
+            } catch {
+              existingBotId = null;
+            }
+          }
+
+          if (!existingBotId) {
+            return {
+              status: 409,
+              body: {
+                message:
+                  "The existing Telegram bot identity cannot be verified safely. Contact support before reconnecting.",
+              },
+            };
+          }
+
+          if (existingBotId !== botId) {
+            return {
+              status: 409,
+              body: {
+                message:
+                  "A different Telegram bot is already connected to this seller. Contact support to change the connected bot.",
+              },
+            };
+          }
+
+          const isMissingWebhookSecret = !connection.webhookSecret;
+          let webhookSecret: string;
+
+          if (connection.webhookSecret) {
+            try {
+              webhookSecret = decrypt(connection.webhookSecret);
+            } catch {
+              return {
+                status: 409,
+                body: {
+                  message:
+                    "The existing Telegram webhook secret could not be verified. Contact support before reconnecting.",
+                },
+              };
+            }
+          } else {
+            webhookSecret = crypto.randomBytes(32).toString("base64url");
+          }
+
+          // Preserve an already-active connection when its secret is valid.
+          // A legacy row without a secret stays inactive until Telegram
+          // confirms the new secret, because inbound auth cannot validate it.
+          await prisma.channelConnection.update({
+            where: { id: connection.id },
+            data: {
+              accessToken: encrypt(normalizedBotToken),
+              externalAccountId: botId,
+              webhookSecret:
+                connection.webhookSecret ?? encrypt(webhookSecret),
+              webhookUrl,
+              isActive: isMissingWebhookSecret ? false : connection.isActive,
+            },
+          });
+
+          const registered = await registerTelegramWebhook(
+            normalizedBotToken,
+            webhookUrl,
+            webhookSecret
+          );
+
+          if (!registered) {
+            return {
+              status: 502,
+              body: {
+                message:
+                  "Telegram webhook registration could not be confirmed. The connection has been retained for a safe retry.",
+              },
+            };
+          }
+
+          // If activation fails after Telegram accepts setWebhook, the row
+          // stays retryable with a durable secret.
+          await prisma.channelConnection.update({
+            where: { id: connection.id },
+            data: { isActive: true },
+          });
+
+          return {
+            status: 200,
+            body: {
+              success: true,
+              message: "Telegram connected successfully",
+              botName: botInfo?.result?.first_name,
+              botUsername: botInfo?.result?.username,
+              webhookUrl,
+            },
+          };
+        };
+
+        if (existing) {
+          return reconnectExisting(existing);
+        }
+
+        // First connection: reserve the unique seller/platform slot before
+        // the external request. The row stays inactive until Telegram confirms.
+        const webhookSecret = crypto.randomBytes(32).toString("base64url");
+        let created: Awaited<
+          ReturnType<typeof prisma.channelConnection.create>
+        >;
+
+        try {
+          created = await prisma.channelConnection.create({
+            data: {
+              sellerId,
+              platform: "TELEGRAM",
+              accessToken: encrypt(normalizedBotToken),
+              externalAccountId: botId,
+              webhookSecret: encrypt(webhookSecret),
+              webhookUrl,
+              isActive: false,
+            },
+          });
+        } catch (error) {
+          if (!isPrismaUniqueConstraintError(error)) {
+            throw error;
+          }
+
+          // Defensive fallback for writers that do not participate in this
+          // lock protocol: re-read and apply the same identity checks.
+          existing = await prisma.channelConnection.findFirst({
+            where: { sellerId, platform: "TELEGRAM" },
+          });
+
+          if (!existing) {
+            return {
+              status: 409,
+              body: {
+                message:
+                  "The Telegram connection changed during setup. Please retry.",
+              },
+            };
+          }
+
+          return reconnectExisting(existing);
+        }
+
+        const registered = await registerTelegramWebhook(
+          normalizedBotToken,
+          webhookUrl,
+          webhookSecret
+        );
+
+        if (!registered) {
+          // Retain the inactive row. Telegram may have accepted the webhook
+          // before a timeout; retrying with this same secret is safe.
+          return {
+            status: 502,
+            body: {
+              message:
+                "Telegram webhook registration could not be confirmed. The connection has been retained for a safe retry.",
+            },
+          };
+        }
+
+        await prisma.channelConnection.update({
+          where: { id: created.id },
+          data: { isActive: true },
+        });
+
+        return {
+          status: 200,
+          body: {
+            success: true,
+            message: "Telegram connected successfully",
+            botName: botInfo.result?.first_name,
+            botUsername: botInfo.result?.username,
+            webhookUrl,
+          },
+        };
       }
     );
 
-    if (!webhookResponse.data?.ok) {
-      return res.status(502).json({
-        message: "Failed to register Telegram webhook",
-      });
-    }
-
-    // Remove old Telegram connection.
-    await prisma.channelConnection.deleteMany({
-      where: {
-        sellerId,
-        platform: "TELEGRAM",
-      },
-    });
-
-    /*
-     * Save both credentials encrypted at rest.
-     *
-     * The webhook secret must never be stored in plaintext.
-     */
-    await prisma.channelConnection.create({
-      data: {
-        sellerId,
-        platform: "TELEGRAM",
-        accessToken: encrypt(botToken),
-        webhookSecret: encrypt(webhookSecret),
-        webhookUrl,
-        isActive: true,
-      },
-    });
-
-    return res.json({
-      success: true,
-      message: "Telegram connected successfully",
-      botName: botInfo.data.result?.first_name,
-      botUsername: botInfo.data.result?.username,
-      webhookUrl,
-    });
-  } catch (err) {
-    /*
-     * Do not log Telegram API response bodies or credentials.
-     */
-    logger.error("Failed to connect Telegram", err);
-
+    // Send the HTTP response only after the advisory-lock transaction commits.
+    return res.status(result.status).json(result.body);
+  } catch {
+    // Never log the raw Axios error: its request URL can contain the token.
+    logger.error("Failed to connect Telegram");
     return res.status(500).json({
       message: "Failed to connect Telegram",
     });
